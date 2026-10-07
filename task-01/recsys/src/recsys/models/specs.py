@@ -37,10 +37,13 @@ class ItemKnnSpec(_Spec):
 
 
 class AlsSpec(_Spec):
-    """Implicit-feedback matrix factorization (RePlay ALSWrap on Spark MLlib ALS)."""
+    """Implicit-feedback matrix factorization (ALS from the ``implicit`` library)."""
 
     kind: Literal["als"]
-    rank: PositiveInt = 64
+    rank: PositiveInt = 64  # latent factors per user / item
+    iterations: PositiveInt = 15
+    regularization: PositiveFloat = 0.01
+    alpha: PositiveFloat = 1.0  # confidence weight of observed interactions
 
 
 class UserKnnSpec(_Spec):

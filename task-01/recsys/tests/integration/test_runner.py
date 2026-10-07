@@ -1,9 +1,11 @@
 import polars as pl
 import pytest
 
-from recsys.config import load_config
+from recsys.config import load_config, with_models_from
 from recsys.data.pipeline import prepare
+from recsys.evaluation import runner as runner_module
 from recsys.evaluation.runner import UnknownModelError, load_stage, run_experiment
+from recsys.models.als import ImplicitAls
 from recsys.models.registry import BuildContext, build_model
 from recsys.models.specs import (
     AlsSpec,
@@ -82,3 +84,47 @@ def test_run_experiment_releases_spark_caches_after_each_model(spark, toy_projec
     run_experiment(cfg, load_stage(cfg, "test"), ["popular", "item_knn"], spark)
 
     assert spark.sparkContext._jsc.getPersistentRDDs().isEmpty()
+
+
+def test_registry_builds_implicit_als_for_als_specs(spark):
+    model = build_model(
+        "als", AlsSpec(kind="als", rank=4), BuildContext(spark=spark, seed=0, threads=1)
+    )
+
+    assert isinstance(model, ImplicitAls)
+
+
+HYBRID_MODELS = (
+    "popular: {kind: popularity}\n"
+    "recent: {kind: popularity, window_days: 400}\n"
+    "mix: {kind: hybrid, components: {popular: 1.0, recent: 0.5}, depth: 5}\n"
+)
+
+
+def test_hybrid_reuses_component_runs_and_matches_a_fresh_build(spark, toy_project, monkeypatch):
+    models_file = toy_project / "hybrid.yaml"
+    models_file.write_text(HYBRID_MODELS)
+    cfg = with_models_from(
+        load_config(toy_project / "config.yaml").resolve(toy_project), models_file
+    )
+    prepare(cfg)
+    data = load_stage(cfg, "test")
+    fresh = run_experiment(cfg, data, ["mix"], spark).drop(
+        "fit_seconds", "recommend_seconds", "run_at"
+    )
+    built: list[str] = []
+    original = runner_module.build_model
+    monkeypatch.setattr(
+        runner_module,
+        "build_model",
+        lambda name, spec, ctx: built.append(name) or original(name, spec, ctx),
+    )
+
+    table = run_experiment(cfg, data, ["mix", "popular", "recent"], spark)
+
+    assert built == ["popular", "recent"]  # the hybrid was fused from cached component runs
+    reused = table.filter(pl.col("model") == "mix").drop(
+        "fit_seconds", "recommend_seconds", "run_at"
+    )
+    assert reused.equals(fresh)
+    assert table["model"].unique(maintain_order=True).to_list() == ["popular", "recent", "mix"]

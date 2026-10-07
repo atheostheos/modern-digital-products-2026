@@ -1,0 +1,17 @@
+# Knob: component weights of the RRF hybrid. Components are fitted once and reused;
+# each weighting below is only a fusion of their cached rankings.
+also_bought: {kind: association_rules, min_item_count: 3, min_pair_count: 2}
+user_knn:    {kind: user_knn, num_neighbours: 400}
+als:         {kind: als, rank: 32}
+content:     {kind: content, profile_items: 1}
+trending:    {kind: popularity, window_days: 365}
+hybrid_equal:
+  {kind: hybrid, components: {also_bought: 1.0, user_knn: 1.0, als: 1.0, content: 1.0, trending: 1.0}}
+hybrid_default:
+  {kind: hybrid, components: {also_bought: 1.0, user_knn: 1.0, als: 1.0, content: 0.5, trending: 0.5}}
+hybrid_rules_x2:
+  {kind: hybrid, components: {also_bought: 2.0, user_knn: 1.0, als: 1.0, content: 0.5, trending: 0.5}}
+hybrid_no_content:
+  {kind: hybrid, components: {also_bought: 1.0, user_knn: 1.0, als: 1.0, trending: 0.5}}
+hybrid_low_trending:
+  {kind: hybrid, components: {also_bought: 1.0, user_knn: 1.0, als: 1.0, content: 0.5, trending: 0.2}}

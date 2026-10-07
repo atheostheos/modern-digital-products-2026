@@ -43,17 +43,27 @@ class Hybrid:
         return self
 
     def recommend(self, users: pl.Series, k: int) -> pl.DataFrame:
-        contributions = [
-            self._rrf(model.recommend(users, max(k, self._depth)), weight)
+        rankings = [
+            (model.recommend(users, max(k, self._depth)), weight)
             for model, weight in self._components
         ]
-        fused = pl.concat(contributions).group_by("user_id", "item_id").agg(pl.col("score").sum())
+        fused = fuse(rankings, k=k, depth=self._depth, rrf_k=self._rrf_k)
         logger.info(
             "%s: served %s of %s users", self.name, fused["user_id"].n_unique(), users.n_unique()
         )
-        return top_k(fused.select(REC_COLUMNS), k)
+        return fused
 
-    def _rrf(self, recs: pl.DataFrame, weight: float) -> pl.DataFrame:
-        ranked = top_k(recs, max(self._depth, 1))
-        rank = pl.int_range(1, pl.len() + 1).over("user_id")
-        return ranked.with_columns(score=weight / (self._rrf_k + rank)).select(REC_COLUMNS)
+
+def fuse(
+    rankings: list[tuple[pl.DataFrame, float]], k: int, depth: int, rrf_k: int = DEFAULT_RRF_K
+) -> pl.DataFrame:
+    """Weighted RRF of per-model recommendation frames (each truncated to ``depth``)."""
+    contributions = [_rrf(recs, weight, depth, rrf_k) for recs, weight in rankings]
+    summed = pl.concat(contributions).group_by("user_id", "item_id").agg(pl.col("score").sum())
+    return top_k(summed.select(REC_COLUMNS), k)
+
+
+def _rrf(recs: pl.DataFrame, weight: float, depth: int, rrf_k: int) -> pl.DataFrame:
+    ranked = top_k(recs, depth)
+    rank = pl.int_range(1, pl.len() + 1).over("user_id")
+    return ranked.with_columns(score=weight / (rrf_k + rank)).select(REC_COLUMNS)

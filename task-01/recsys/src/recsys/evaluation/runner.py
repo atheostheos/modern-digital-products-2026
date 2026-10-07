@@ -22,7 +22,9 @@ from pyspark.sql import SparkSession
 from recsys.config import Config
 from recsys.evaluation.evaluator import EvalWindow, evaluate
 from recsys.models.base import TrainData
+from recsys.models.hybrid import fuse
 from recsys.models.registry import BuildContext, build_model
+from recsys.models.specs import HybridSpec
 
 logger = logging.getLogger(__name__)
 
@@ -123,37 +125,100 @@ def _sample_users(truth: pl.DataFrame, n: int | None, seed: int) -> pl.DataFrame
     return truth.filter(pl.col("user_id").is_in(sample.implode()))
 
 
+@dataclass(frozen=True)
+class RunOutput:
+    recs: pl.DataFrame
+    fit_seconds: float
+    recommend_seconds: float
+
+
 def run_experiment(
     cfg: Config, data: StageData, model_names: list[str], spark: SparkSession
 ) -> pl.DataFrame:
-    """Fit + evaluate each named model; one row per (model, segment) with timings."""
+    """Fit + evaluate each named model; one row per (model, segment) with timings.
+
+    Hybrids run last; when all their components are part of the same experiment, they are
+    fused from the components' cached recommendations instead of re-fitting them (their
+    timings are then the components' totals plus the fusion).
+    """
     validate_models(cfg, model_names)
-    tables = [_run_one(name, cfg, data, spark) for name in model_names]
+    ordered = sorted(model_names, key=lambda n: isinstance(cfg.models[n], HybridSpec))
+    k = max(cfg.evaluation.ks)
+    depths = _component_depths(cfg, ordered, k)
+    cache: dict[str, RunOutput] = {}
+    tables = []
+    for name in ordered:
+        output = _fused_from_cache(name, cfg, cache, k) or _fit_and_recommend(
+            name, cfg, data, spark, depths.get(name, k)
+        )
+        if name in depths:
+            cache[name] = output
+        tables.append(_evaluate_output(name, output, data, cfg))
     return pl.concat(tables, how="diagonal_relaxed")
 
 
-def _run_one(name: str, cfg: Config, data: StageData, spark: SparkSession) -> pl.DataFrame:
+def _component_depths(cfg: Config, names: list[str], k: int) -> dict[str, int]:
+    """How deep each hybrid component of this experiment must recommend."""
+    depths: dict[str, int] = {}
+    for name in names:
+        spec = cfg.models[name]
+        if isinstance(spec, HybridSpec):
+            for part in spec.components:
+                if part in names:
+                    depths[part] = max(depths.get(part, k), spec.depth)
+    return depths
+
+
+def _fused_from_cache(
+    name: str, cfg: Config, cache: dict[str, RunOutput], k: int
+) -> RunOutput | None:
+    spec = cfg.models[name]
+    if not isinstance(spec, HybridSpec) or not all(p in cache for p in spec.components):
+        return None
+    started = clock.perf_counter()
+    recs = fuse(
+        [(cache[p].recs, w) for p, w in spec.components.items()],
+        k=k,
+        depth=spec.depth,
+        rrf_k=spec.rrf_k,
+    )
+    fusion = clock.perf_counter() - started
+    parts = [cache[p] for p in spec.components]
+    logger.info("%s: fused from cached components %s in %.1fs", name, list(spec.components), fusion)
+    return RunOutput(
+        recs=recs,
+        fit_seconds=sum(p.fit_seconds for p in parts),
+        recommend_seconds=sum(p.recommend_seconds for p in parts) + fusion,
+    )
+
+
+def _fit_and_recommend(
+    name: str, cfg: Config, data: StageData, spark: SparkSession, depth: int
+) -> RunOutput:
     users = data.window.ground_truth["user_id"].unique()
-    k = max(cfg.evaluation.ks)
     ctx = BuildContext(spark=spark, seed=cfg.seed, threads=cfg.spark.cores, catalog=cfg.models)
     model = build_model(name, cfg.models[name], ctx)
     started = clock.perf_counter()
     try:
         model.fit(data.train)
         fitted = clock.perf_counter()
-        recs = model.recommend(users, k)
+        recs = model.recommend(users, depth)
         recommended = clock.perf_counter()
     finally:
         # RePlay models cache Spark DataFrames and never release them; without this,
         # caches of earlier models accumulate until Spark runs out of memory
         _release_spark_caches(spark)
     logger.info("%s: fit %.1fs, recommend %.1fs", name, fitted - started, recommended - fitted)
+    return RunOutput(recs, fitted - started, recommended - fitted)
+
+
+def _evaluate_output(name: str, output: RunOutput, data: StageData, cfg: Config) -> pl.DataFrame:
     return (
-        evaluate(recs, data.window, cfg.evaluation)
+        evaluate(output.recs, data.window, cfg.evaluation)
         .with_columns(
             model=pl.lit(name),
-            fit_seconds=pl.lit(round(fitted - started, 2)),
-            recommend_seconds=pl.lit(round(recommended - fitted, 2)),
+            fit_seconds=pl.lit(round(output.fit_seconds, 2)),
+            recommend_seconds=pl.lit(round(output.recommend_seconds, 2)),
             run_at=pl.lit(datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC")),
         )
         .select("model", pl.exclude("model"))

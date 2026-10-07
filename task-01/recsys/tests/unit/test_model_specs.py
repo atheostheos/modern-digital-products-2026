@@ -86,3 +86,9 @@ def test_invalid_phase4_specs_are_rejected(bad):
 def test_invalid_hybrid_specs_are_rejected(bad):
     with pytest.raises(ValidationError):
         SPECS.validate_python({"m": bad})
+
+
+def test_als_spec_exposes_implicit_als_knobs():
+    spec = SPECS.validate_python({"als": {"kind": "als", "rank": 32, "alpha": 5.0}})["als"]
+
+    assert (spec.rank, spec.iterations, spec.regularization, spec.alpha) == (32, 15, 0.01, 5.0)

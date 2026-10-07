@@ -5,8 +5,9 @@ from dataclasses import dataclass, field
 from typing import assert_never
 
 from pyspark.sql import SparkSession
-from replay.models import ALSWrap, AssociationRulesItemRec, ItemKNN
+from replay.models import AssociationRulesItemRec, ItemKNN
 
+from recsys.models.als import ImplicitAls
 from recsys.models.base import Recommender
 from recsys.models.content import ContentBased
 from recsys.models.hybrid import Hybrid
@@ -40,8 +41,18 @@ def build_model(name: str, spec: ModelSpec, ctx: BuildContext) -> Recommender:
     match spec:
         case PopularitySpec():
             return KeyedPopularity(name, ctx.spark, key=spec.key, window_days=spec.window_days)
-        case AssociationRulesSpec() | ItemKnnSpec() | AlsSpec():
-            return ReplayModel(name, lambda: _replay_model(spec, ctx.seed), ctx.spark)
+        case AssociationRulesSpec() | ItemKnnSpec():
+            return ReplayModel(name, lambda: _replay_model(spec), ctx.spark)
+        case AlsSpec():
+            return ImplicitAls(
+                name,
+                factors=spec.rank,
+                iterations=spec.iterations,
+                regularization=spec.regularization,
+                alpha=spec.alpha,
+                seed=ctx.seed,
+                threads=ctx.threads,
+            )
         case UserKnnSpec():
             return UserKnn(
                 name,
@@ -72,9 +83,7 @@ def build_model(name: str, spec: ModelSpec, ctx: BuildContext) -> Recommender:
             assert_never(spec)
 
 
-def _replay_model(
-    spec: AssociationRulesSpec | ItemKnnSpec | AlsSpec, seed: int
-) -> AssociationRulesItemRec | ItemKNN | ALSWrap:
+def _replay_model(spec: AssociationRulesSpec | ItemKnnSpec) -> AssociationRulesItemRec | ItemKNN:
     """A fresh RePlay estimator for the personalized RePlay-backed kinds."""
     match spec:
         case AssociationRulesSpec():
@@ -89,7 +98,5 @@ def _replay_model(
             return ItemKNN(
                 num_neighbours=spec.num_neighbours, shrink=spec.shrink, weighting=spec.weighting
             )
-        case AlsSpec():
-            return ALSWrap(rank=spec.rank, implicit_prefs=True, seed=seed)
         case _:  # pragma: no cover - exhaustive
             assert_never(spec)
