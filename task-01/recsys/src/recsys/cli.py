@@ -21,15 +21,22 @@ from recsys.data.ingest import IngestError
 from recsys.data.pipeline import prepare as run_prepare
 from recsys.data.split import SplitError
 from recsys.evaluation.analysis import analyze_stage
-from recsys.evaluation.benchmark import BenchSettings, precomputed_row, run_benchmark
+from recsys.evaluation.benchmark import (
+    TIME_BUDGET_SECONDS,
+    BenchSettings,
+    precomputed_row,
+    run_benchmark,
+)
 from recsys.evaluation.runner import (
     SUMMARY_K,
     Stage,
     TrialBudget,
     UnknownModelError,
     load_stage,
+    read_recs_manifest,
     run_experiment,
     validate_models,
+    write_recs_manifest,
     write_results,
     write_table,
 )
@@ -144,6 +151,8 @@ def evaluate_models(
     recs_dir = cfg.data.processed_dir.parent / "recs" / (output or stage) if save_recs else None
     with open_spark(cfg.spark) as spark:
         table = run_experiment(cfg, data, names, spark, recs_dir=recs_dir)
+    if recs_dir is not None:
+        write_recs_manifest(recs_dir, stage, budget)
     budget_columns = {"sample_users": budget.sample_users, "train_days": budget.train_days}
     table = table.with_columns(pl.lit(v, pl.Int64).alias(k) for k, v in budget_columns.items())
     paths = write_results(table, cfg.results_dir, output or stage)
@@ -159,7 +168,7 @@ def analyze(
     """Business / fairness / cold-start / quality analysis of saved recommendation lists."""
     cfg = _load_or_exit(config, root)
     recs_dir = cfg.data.processed_dir.parent / "recs" / stage
-    files = sorted(recs_dir.glob("*.parquet"))
+    files = sorted(recs_dir.glob("*.parquet"))  # model lists; manifest.json is separate
     if not files:
         typer.echo(
             f"Error: no saved recommendations in {recs_dir}. "
@@ -172,7 +181,15 @@ def analyze(
         f.stem: pl.read_parquet(f)
         for f in sorted(files, key=lambda f: (order.get(f.stem, len(order)), f.stem))
     }
-    table = analyze_stage(load_stage(cfg, stage).window, saved, k=SUMMARY_K)
+    if max(cfg.evaluation.ks) < SUMMARY_K:
+        typer.echo(
+            f"Error: saved lists hold top-{max(cfg.evaluation.ks)}; analysis needs "
+            f"@{SUMMARY_K} (raise evaluation.ks)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    budget = read_recs_manifest(recs_dir)
+    table = analyze_stage(load_stage(cfg, stage, budget).window, saved, k=SUMMARY_K)
     paths = write_table(
         table, cfg.results_dir / "analysis" / stage, f"{stage} analysis @{SUMMARY_K}"
     )
@@ -208,8 +225,13 @@ def bench(
         rows = run_benchmark(cfg, data, names, spark, settings)
     precomputed = cfg.data.processed_dir.parent / "recs" / "test" / "hybrid.parquet"
     if precomputed.is_file():
-        rows.append(precomputed_row("hybrid (precomputed lookup)", precomputed, settings))
-    title = f"Serving latency ({requests} single requests, fit on the last {train_days} days)"
+        rows.append(
+            precomputed_row("hybrid (precomputed test lists, lookup only)", precomputed, settings)
+        )
+    title = (
+        f"Serving latency (up to {requests} single requests per model, "
+        f"{TIME_BUDGET_SECONDS:.0f} s budget; fit on the last {train_days} days; warm val users)"
+    )
     paths = write_table(
         pl.DataFrame(rows, strict=False), cfg.results_dir / "benchmark" / "latency", title
     )

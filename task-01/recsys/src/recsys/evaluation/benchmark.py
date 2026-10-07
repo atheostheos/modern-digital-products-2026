@@ -37,7 +37,7 @@ def run_benchmark(
 ) -> list[dict[str, float | int | str]]:
     """Benchmark each named model on warm users of the stage (they have history to use)."""
     warm = data.train.interactions["user_id"].unique().implode()
-    candidates = data.window.ground_truth["user_id"].unique()
+    candidates = data.window.ground_truth["user_id"].unique().sort()
     users = candidates.filter(candidates.is_in(warm))
     ctx = BuildContext(spark=spark, seed=cfg.seed, threads=cfg.spark.cores, catalog=cfg.models)
     rows = []
@@ -63,7 +63,7 @@ def precomputed_row(name: str, path: Path, settings: BenchSettings) -> dict[str,
     """Latency of serving the precomputed lists stored in ``path``."""
     recs = pl.read_parquet(path)
     return lookup_latency(
-        name, recs, recs["user_id"].unique(), requests=settings.requests, seed=settings.seed
+        name, recs, recs["user_id"].unique().sort(), requests=settings.requests, seed=settings.seed
     )
 
 
@@ -90,9 +90,14 @@ def benchmark_model(
     Single requests stop once ``time_budget_seconds`` is spent (but at least
     ``min_requests`` run); ``after_call`` runs after every request (e.g. cache cleanup).
     """
+    if users.is_empty():
+        raise ValueError(f"{model.name}: no users to benchmark")
+    users = users.unique().sort()  # deterministic pool -> seeded samples are reproducible
     started = time.perf_counter()
     model.fit(train)
     fit_seconds = time.perf_counter() - started
+    model.recommend(users.head(1), k)  # untimed warm-up (lazy init, first Spark job)
+    after_call()
     single_times = _single_requests(
         model,
         users.sample(n=min(requests, users.len()), seed=seed),

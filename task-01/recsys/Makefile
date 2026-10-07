@@ -1,10 +1,10 @@
 SAMPLE ?=          # e.g. SAMPLE=20000; off by default: hits are rare (~1%), small samples are noise
 TRAIN_DAYS ?= 730
 
-.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep analyze bench
+.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep analyze bench all
 
 help:  ## list targets
-	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
+	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-14s %s\n", $$1, $$2}'
 
 setup:  ## install locked dependencies (incl. dev)
 	uv sync --locked
@@ -47,6 +47,8 @@ sweep:  ## one cheap sweep, low CPU priority: make sweep NAME=item_knn [TRAIN_DA
 	@test -n "$(NAME)" || (echo "usage: make sweep NAME=<configs/sweeps/NAME.yaml>"; exit 1)
 	nice -n 10 uv run recsys evaluate --stage val --models configs/sweeps/$(NAME).yaml \
 		--output sweep_$(NAME) --train-days $(TRAIN_DAYS) $(if $(SAMPLE),--sample-users $(SAMPLE))
+
+all: data prepare eda evaluate-test analyze bench  ## full pipeline: data -> final results (~15 min, 4 cores)
 
 clean:  ## remove caches (keeps data/ and results/)
 	rm -rf .pytest_cache .ruff_cache .coverage htmlcov

@@ -40,7 +40,7 @@ def test_benchmark_times_single_requests_and_a_batch():
 
     result = benchmark_model(stub, TRAIN, USERS, k=10, requests=5, batch_size=20, seed=0)
 
-    assert stub.calls == [1, 1, 1, 1, 1, 20]
+    assert stub.calls == [1, 1, 1, 1, 1, 1, 20]  # warm-up + 5 singles + batch
     assert result["model"] == "stub"
     assert result["requests"] == 5 and result["batch_users"] == 20
     assert 1.0 <= result["single_p50_ms"] <= result["single_p95_ms"]
@@ -97,7 +97,7 @@ def test_time_budget_stops_single_requests_early_but_keeps_a_minimum():
     )
 
     assert result["requests"] == 3  # budget exceeded after 2 calls, minimum of 3 kept
-    assert stub.calls == [1, 1, 1, 5]
+    assert stub.calls == [1, 1, 1, 1, 5]  # warm-up + 3 singles + batch
 
 
 def test_after_call_hook_runs_after_every_request():
@@ -114,4 +114,38 @@ def test_after_call_hook_runs_after_every_request():
         after_call=lambda: calls.append("cleared"),
     )
 
-    assert calls == ["cleared"] * 3  # 2 single requests + 1 batch
+    assert calls == ["cleared"] * 4  # warm-up + 2 single requests + 1 batch
+
+
+def test_benchmark_picks_the_same_users_for_the_same_seed():
+    a, b = SlowStub(), SlowStub()
+    asked_a: list[str] = []
+    asked_b: list[str] = []
+    a.recommend = lambda users, k, s=a: (
+        asked_a.extend(users.to_list()) or SlowStub.recommend(s, users, k)
+    )
+    b.recommend = lambda users, k, s=b: (
+        asked_b.extend(users.to_list()) or SlowStub.recommend(s, users, k)
+    )
+    pool = pl.Series([f"u{i}" for i in range(40)])
+
+    benchmark_model(a, TRAIN, pool, k=5, requests=5, batch_size=3, seed=7)
+    benchmark_model(b, TRAIN, pool.reverse(), k=5, requests=5, batch_size=3, seed=7)
+
+    assert asked_a == asked_b  # independent of the pool's order
+
+
+def test_benchmark_warms_up_with_one_untimed_request():
+    stub = SlowStub()
+
+    result = benchmark_model(stub, TRAIN, USERS, k=10, requests=2, batch_size=3, seed=0)
+
+    assert stub.calls == [1, 1, 1, 3]  # warm-up + 2 timed singles + batch
+    assert result["requests"] == 2
+
+
+def test_benchmark_rejects_an_empty_user_pool():
+    with pytest.raises(ValueError, match="no users"):
+        benchmark_model(
+            SlowStub(), TRAIN, pl.Series([], dtype=pl.String), k=1, requests=1, batch_size=1, seed=0
+        )

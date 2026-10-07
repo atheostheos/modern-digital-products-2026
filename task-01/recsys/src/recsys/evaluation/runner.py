@@ -8,7 +8,9 @@ Timing note: Spark is lazy, so part of a model's fitting work can be executed du
 its first ``recommend`` call; ``fit_seconds`` + ``recommend_seconds`` is the reliable total.
 """
 
+import json
 import logging
+import math
 import time as clock
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -234,6 +236,27 @@ def _evaluate_output(name: str, output: RunOutput, data: StageData, cfg: Config)
     )
 
 
+MANIFEST = "manifest.json"
+
+
+def write_recs_manifest(recs_dir: Path, stage: Stage, budget: TrialBudget) -> Path:
+    """Record how saved lists were produced so analyses rebuild the same window."""
+    path = recs_dir / MANIFEST
+    payload = {"stage": stage, "sample_users": budget.sample_users, "train_days": budget.train_days}
+    _atomic_write(path, lambda p: p.write_text(json.dumps(payload, indent=2) + "\n"))
+    return path
+
+
+def read_recs_manifest(recs_dir: Path) -> TrialBudget:
+    """The budget the lists in ``recs_dir`` were made with (full budget if unrecorded)."""
+    path = recs_dir / MANIFEST
+    if not path.is_file():
+        logger.warning("%s missing: assuming lists were made with the full budget", path)
+        return FULL_BUDGET
+    payload = json.loads(path.read_text())
+    return TrialBudget(sample_users=payload["sample_users"], train_days=payload["train_days"])
+
+
 def _save_recs(recs: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, recs.write_parquet)
@@ -293,5 +316,18 @@ def _markdown_summary(table: pl.DataFrame, name: str) -> str:
     return _markdown(table.select(columns), f"{name} metrics @{SUMMARY_K}")
 
 
+MISSING = "-"
+LARGE = 1000.0  # render as a grouped integer from here on
+SMALL = 0.001  # below this, scientific notation keeps the digits visible
+
+
 def _fmt(value: object) -> str:
-    return f"{value:.4f}" if isinstance(value, float) else str(value)
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        return MISSING
+    if not isinstance(value, float):
+        return str(value)
+    if abs(value) >= LARGE:
+        return f"{value:,.0f}"
+    if abs(value) >= 1:
+        return f"{value:.2f}"
+    return f"{value:.4f}" if abs(value) >= SMALL or value == 0 else f"{value:.2e}"

@@ -8,6 +8,7 @@ from recsys import cli
 from recsys.cli import app
 from recsys.config import PROJECT_ROOT
 from recsys.data.download import DatasetPaths, DownloadError
+from recsys.evaluation.analysis import ACTUAL
 
 runner = CliRunner()
 
@@ -214,7 +215,7 @@ def test_evaluate_command_can_save_top_k_recommendations(toy_project, shared_spa
     assert result.exit_code == 0, result.output
     recs = pl.read_parquet(toy_project / "data/recs/test/popular.parquet")
     assert recs.columns == ["user_id", "item_id", "score"]
-    assert recs.group_by("user_id").len()["len"].max() <= 2  # toy config: max k = 2
+    assert recs.group_by("user_id").len()["len"].max() <= 10  # toy config: max k = 10
 
 
 @pytest.mark.spark
@@ -233,6 +234,7 @@ def test_analyze_command_summarizes_saved_recommendations(toy_project, shared_sp
     assert result.exit_code == 0, result.output
     table = pl.read_parquet(toy_project / "results/analysis/test.parquet")
     assert table["model"].to_list()[1:] == ["popular"]
+    assert table.filter(pl.col("model") == ACTUAL)["users"].item() == 2
     assert "captured_revenue_share" in table.columns
 
 
@@ -278,7 +280,7 @@ def test_bench_command_adds_precomputed_lookup_when_lists_exist(toy_project, sha
 
     assert result.exit_code == 0, result.output
     table = pl.read_parquet(toy_project / "results/benchmark/latency.parquet")
-    assert table["model"].to_list() == ["popular", "hybrid (precomputed lookup)"]
+    assert table["model"].to_list() == ["popular", "hybrid (precomputed test lists, lookup only)"]
 
 
 def test_bench_command_rejects_unknown_model(toy_project):
@@ -297,3 +299,48 @@ def test_bench_command_rejects_unknown_model(toy_project):
 
     assert result.exit_code == 1
     assert "Unknown model" in result.output
+
+
+@pytest.mark.spark
+def test_analyze_reuses_the_budget_the_lists_were_made_with(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+    assert (
+        runner.invoke(
+            app,
+            [
+                "evaluate",
+                "--stage",
+                "test",
+                "-m",
+                "popular",
+                "--save-recs",
+                "--sample-users",
+                "1",
+                *args,
+            ],
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(app, ["analyze", "--stage", "test", *args])
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/analysis/test.parquet")
+    assert table.filter(pl.col("model") == ACTUAL)["users"].item() == 1  # sampled truth only
+
+
+def test_analyze_rejects_lists_shallower_than_the_summary_depth(toy_project):
+    shallow = toy_project / "shallow.yaml"
+    shallow.write_text((toy_project / "config.yaml").read_text().replace("- 10", "- 2"))
+    args = ["--config", str(shallow), "--root", str(toy_project)]
+    lists = toy_project / "data/recs/test"
+    lists.mkdir(parents=True)
+    pl.DataFrame({"user_id": ["u1"], "item_id": ["p2"], "score": [1.0]}).write_parquet(
+        lists / "popular.parquet"
+    )
+
+    result = runner.invoke(app, ["analyze", "--stage", "test", *args])  # max k = 2 < 10
+
+    assert result.exit_code == 1
+    assert "@10" in result.output

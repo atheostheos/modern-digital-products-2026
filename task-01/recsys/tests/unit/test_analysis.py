@@ -57,7 +57,8 @@ def test_brand_concentration_counts_slots_of_the_top_brands():
     out = brand_concentration(rec, ITEMS, k=2, top=1)
 
     assert out["distinct_brands"] == 2  # Fender, Yamaha (null brand ignored)
-    assert out["top_brand_slot_share"] == pytest.approx(3 / 5)  # Fender: a, b, a
+    assert out["top_brand_slot_share"] == pytest.approx(3 / 4)  # Fender a, b, a of 4 branded
+    assert out["branded_slot_share"] == pytest.approx(4 / 5)  # d has no brand
 
 
 def test_item_cold_start_shares_and_hits_on_new_items():
@@ -117,3 +118,48 @@ def test_write_table_writes_parquet_csv_and_markdown(tmp_path):
     assert paths.csv.is_file()
     text = paths.markdown.read_text()
     assert text.startswith("# Test analysis") and "| m | 0.1235 |" in text
+
+
+def test_brand_share_is_measured_over_branded_slots_and_branded_share_reported():
+    rec = recs([("u1", "a"), ("u1", "d"), ("u2", "c"), ("u2", "d")])  # d has no brand
+
+    out = brand_concentration(rec, ITEMS, k=2, top=1)
+
+    assert out["branded_slot_share"] == pytest.approx(2 / 4)
+    assert out["top_brand_slot_share"] == pytest.approx(1 / 2)  # Fender: 1 of 2 branded slots
+
+
+def test_captured_revenue_ignores_duplicate_truth_rows():
+    rec = recs([("u1", "a")])
+    truth = pairs([("u1", "a"), ("u1", "a"), ("u2", "c")])
+
+    out = business_proxies(rec, truth, ITEMS, k=1)
+
+    assert out["captured_revenue_share"] == pytest.approx(100 / 150)
+
+
+def test_quality_exposure_reports_rated_slot_share():
+    rec = recs([("u1", "a"), ("u1", "z")])  # z unknown -> no rating
+
+    out = quality_exposure(rec, ITEMS, k=2, max_rating=3.5, min_ratings=10)
+
+    assert out["rated_slot_share"] == pytest.approx(1 / 2)
+
+
+def test_markdown_renders_missing_values_as_dash_and_keeps_small_values(tmp_path):
+    table = pl.DataFrame(
+        {"model": ["m"], "nan": [float("nan")], "none": [None], "tiny": [0.000912]},
+        schema_overrides={"none": pl.Float64},
+    )
+
+    text = write_table(table, tmp_path / "t", title="T").markdown.read_text()
+
+    assert "| m | - | - | 9.12e-04 |" in text
+
+
+def test_markdown_formats_large_and_regular_numbers_readably(tmp_path):
+    table = pl.DataFrame({"model": ["m"], "big": [17380.4], "mid": [9.2941], "small": [0.0245]})
+
+    text = write_table(table, tmp_path / "t", title="T").markdown.read_text()
+
+    assert "| m | 17,380 | 9.29 | 0.0245 |" in text

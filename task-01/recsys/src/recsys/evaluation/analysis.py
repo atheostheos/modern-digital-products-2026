@@ -10,6 +10,10 @@ from recsys.evaluation.evaluator import EvalWindow
 from recsys.evaluation.metrics import top_k
 
 PAIR = ["user_id", "item_id"]
+ACTUAL = "actual (window interactions)"
+LOW_RATING = 3.5  # stars: below this an item counts as poorly rated
+MIN_RATINGS = 10  # ... but only with enough ratings to be reliable
+TOP_BRANDS = 10
 
 
 def as_recs(interactions: pl.DataFrame) -> pl.DataFrame:
@@ -21,8 +25,9 @@ def business_proxies(
     recs: pl.DataFrame, truth: pl.DataFrame, items: pl.DataFrame, k: int
 ) -> dict[str, float]:
     """Price exposure and the share of (priced) ground-truth value captured by hits."""
+    truth = truth.select(PAIR).unique()
     top = top_k(recs, k).join(items.select("item_id", "price"), on="item_id", how="left")
-    hits = top.join(truth.select(PAIR), on=PAIR, how="semi")
+    hits = top.join(truth, on=PAIR, how="semi")
     truth_value = truth.join(items.select("item_id", "price"), on="item_id")["price"].sum()
     return {
         "priced_slot_share": _share(top["price"].is_not_null()),
@@ -34,7 +39,7 @@ def business_proxies(
 def brand_concentration(
     recs: pl.DataFrame, items: pl.DataFrame, k: int, top: int = 10
 ) -> dict[str, float]:
-    """How much recommendation exposure the ``top`` most-recommended brands receive."""
+    """Exposure share of the ``top`` most-recommended brands, among slots with a known brand."""
     slots = top_k(recs, k).join(items.select("item_id", "brand"), on="item_id", how="left")
     per_brand = (
         slots.drop_nulls("brand")
@@ -42,10 +47,12 @@ def brand_concentration(
         .len()
         .sort(["len", "brand"], descending=[True, False])
     )
+    branded = per_brand["len"].sum()
     return {
         "distinct_brands": float(per_brand.height),
-        "top_brand_slot_share": float(per_brand.head(top)["len"].sum() / slots.height)
-        if slots.height
+        "branded_slot_share": float(branded / slots.height) if slots.height else 0.0,
+        "top_brand_slot_share": float(per_brand.head(top)["len"].sum() / branded)
+        if branded
         else 0.0,
     }
 
@@ -74,6 +81,7 @@ def quality_exposure(
     )
     low = (pl.col("average_rating") < max_rating) & (pl.col("rating_number") >= min_ratings)
     return {
+        "rated_slot_share": _share(top["average_rating"].is_not_null()),
         "low_rated_slot_share": _share(top.select(low.fill_null(False)).to_series()),
         "mean_rec_rating": _mean(top["average_rating"]),
     }
@@ -88,12 +96,6 @@ def _mean(values: pl.Series) -> float:
     return float(mean) if mean is not None else float("nan")
 
 
-ACTUAL = "actual (window interactions)"
-LOW_RATING = 3.5  # stars: below this an item counts as poorly rated
-MIN_RATINGS = 10  # ... but only with enough ratings to be reliable
-TOP_BRANDS = 10
-
-
 def analyze_stage(window: EvalWindow, saved: dict[str, pl.DataFrame], k: int) -> pl.DataFrame:
     """One row per model (plus the ground-truth reference first) with all analysis numbers."""
     rows = [_row(ACTUAL, as_recs(window.ground_truth), window, k=None)]
@@ -101,10 +103,13 @@ def analyze_stage(window: EvalWindow, saved: dict[str, pl.DataFrame], k: int) ->
     return pl.DataFrame(rows)
 
 
-def _row(name: str, recs: pl.DataFrame, window: EvalWindow, k: int | None) -> dict:
+def _row(
+    name: str, recs: pl.DataFrame, window: EvalWindow, k: int | None
+) -> dict[str, str | float]:
     depth = k if k is not None else max(recs.group_by("user_id").len()["len"].max() or 1, 1)
     return {
         "model": name,
+        "users": float(recs["user_id"].n_unique()),
         **business_proxies(recs, window.ground_truth, window.items, depth),
         **brand_concentration(recs, window.items, depth, top=TOP_BRANDS),
         **item_cold_start(recs, window.ground_truth, window.history, depth),

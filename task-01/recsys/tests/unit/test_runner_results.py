@@ -2,7 +2,13 @@ import math
 
 import polars as pl
 
-from recsys.evaluation.runner import write_results
+from recsys.evaluation.runner import (
+    FULL_BUDGET,
+    TrialBudget,
+    read_recs_manifest,
+    write_recs_manifest,
+    write_results,
+)
 
 
 def test_write_results_survives_metric_schema_changes_and_nan(tmp_path):
@@ -42,3 +48,19 @@ def test_write_results_uses_the_given_output_name(tmp_path):
 
     assert paths.parquet.name == "val_item_knn_sweep.parquet"
     assert "# val_item_knn_sweep metrics" in paths.markdown.read_text()
+
+
+def test_recs_manifest_round_trips_the_budget(tmp_path):
+    budget = TrialBudget(sample_users=500, train_days=730)
+
+    write_recs_manifest(tmp_path, "val", budget)
+
+    assert read_recs_manifest(tmp_path) == budget
+
+
+def test_missing_recs_manifest_means_full_budget(tmp_path, caplog):
+    with caplog.at_level("WARNING"):
+        budget = read_recs_manifest(tmp_path)
+
+    assert budget == FULL_BUDGET
+    assert "manifest.json" in caplog.text
