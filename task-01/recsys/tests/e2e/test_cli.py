@@ -200,3 +200,18 @@ def test_evaluate_command_rejects_non_positive_budget(toy_project):
     )
 
     assert result.exit_code != 0
+
+
+@pytest.mark.spark
+def test_evaluate_command_can_save_top_k_recommendations(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+
+    result = runner.invoke(
+        app, ["evaluate", "--stage", "test", "-m", "popular", "--save-recs", *args]
+    )
+
+    assert result.exit_code == 0, result.output
+    recs = pl.read_parquet(toy_project / "data/recs/test/popular.parquet")
+    assert recs.columns == ["user_id", "item_id", "score"]
+    assert recs.group_by("user_id").len()["len"].max() <= 2  # toy config: max k = 2

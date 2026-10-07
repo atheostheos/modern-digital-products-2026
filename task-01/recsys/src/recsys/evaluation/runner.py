@@ -21,6 +21,7 @@ from pyspark.sql import SparkSession
 
 from recsys.config import Config
 from recsys.evaluation.evaluator import EvalWindow, evaluate
+from recsys.evaluation.metrics import top_k
 from recsys.models.base import TrainData
 from recsys.models.hybrid import fuse
 from recsys.models.registry import BuildContext, build_model
@@ -133,13 +134,18 @@ class RunOutput:
 
 
 def run_experiment(
-    cfg: Config, data: StageData, model_names: list[str], spark: SparkSession
+    cfg: Config,
+    data: StageData,
+    model_names: list[str],
+    spark: SparkSession,
+    recs_dir: Path | None = None,
 ) -> pl.DataFrame:
     """Fit + evaluate each named model; one row per (model, segment) with timings.
 
     Hybrids run last; when all their components are part of the same experiment, they are
     fused from the components' cached recommendations instead of re-fitting them (their
-    timings are then the components' totals plus the fusion).
+    timings are then the components' totals plus the fusion). With ``recs_dir``, each
+    model's top-k lists are saved to ``<recs_dir>/<model>.parquet`` for later analysis.
     """
     validate_models(cfg, model_names)
     ordered = sorted(model_names, key=lambda n: isinstance(cfg.models[n], HybridSpec))
@@ -153,6 +159,8 @@ def run_experiment(
         )
         if name in depths:
             cache[name] = output
+        if recs_dir is not None:
+            _save_recs(top_k(output.recs, k), recs_dir / f"{name}.parquet")
         tables.append(_evaluate_output(name, output, data, cfg))
     return pl.concat(tables, how="diagonal_relaxed")
 
@@ -223,6 +231,11 @@ def _evaluate_output(name: str, output: RunOutput, data: StageData, cfg: Config)
         )
         .select("model", pl.exclude("model"))
     )
+
+
+def _save_recs(recs: pl.DataFrame, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write(path, recs.write_parquet)
 
 
 def _release_spark_caches(spark: SparkSession) -> None:

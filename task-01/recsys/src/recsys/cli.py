@@ -117,6 +117,9 @@ def evaluate_models(
     train_days: Annotated[
         int | None, typer.Option(min=1, help="Cheap trial: fit on the last N days only")
     ] = None,
+    save_recs: Annotated[
+        bool, typer.Option(help="Also save top-k lists to data/recs/<output>/<model>.parquet")
+    ] = False,
     config: ConfigOption = DEFAULT_CONFIG_PATH,
     root: RootOption = PROJECT_ROOT,
 ) -> None:
@@ -134,8 +137,9 @@ def evaluate_models(
     except FileNotFoundError as exc:
         typer.echo(f"Error: {exc}\nRun `make prepare` first.", err=True)
         raise typer.Exit(code=1) from exc
+    recs_dir = cfg.data.processed_dir.parent / "recs" / (output or stage) if save_recs else None
     with open_spark(cfg.spark) as spark:
-        table = run_experiment(cfg, data, names, spark)
+        table = run_experiment(cfg, data, names, spark, recs_dir=recs_dir)
     budget_columns = {"sample_users": budget.sample_users, "train_days": budget.train_days}
     table = table.with_columns(pl.lit(v, pl.Int64).alias(k) for k, v in budget_columns.items())
     paths = write_results(table, cfg.results_dir, output or stage)
