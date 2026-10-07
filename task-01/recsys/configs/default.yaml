@@ -1,0 +1,8 @@
+# Default experiment config. Relative paths are resolved against the project root.
+seed: 42
+
+data:
+  hf_repo: McAuley-Lab/Amazon-Reviews-2023
+  category: Musical_Instruments
+  raw_dir: data/raw
+  processed_dir: data/processed
