@@ -18,6 +18,13 @@ split:
   val_start: 2022-10-01
   test_start: 2023-01-01
   test_end: 2023-04-01
+evaluation:
+  ks: [10, 20]
+  history_bins: [0, 1, 2, 5]
+spark:
+  driver_memory_gb: 4
+  shuffle_partitions: 8
+  local_dir: data/spark-tmp
 """
 
 
@@ -54,6 +61,7 @@ def test_config_resolve_anchors_data_and_results_paths(tmp_path):
     resolved = config.resolve(root=tmp_path)
 
     assert resolved.results_dir == tmp_path / "results"
+    assert resolved.spark.local_dir == tmp_path / "data/spark-tmp"
     assert resolved.data.processed_dir == tmp_path / "data/processed"
     assert resolved.split == config.split
     assert config.results_dir == Path("results")
@@ -117,4 +125,24 @@ def test_split_dates_must_be_strictly_increasing(tmp_path, val_start, test_start
     )
 
     with pytest.raises(ConfigError, match="val_start < test_start < test_end"):
+        load_config(write(tmp_path, bad))
+
+
+def test_evaluation_section_loads_cutoffs_and_history_bins(tmp_path):
+    config = load_config(write(tmp_path, VALID_YAML))
+
+    assert config.evaluation.ks == (10, 20)
+    assert config.evaluation.history_bins == (0, 1, 2, 5)
+
+
+@pytest.mark.parametrize(
+    ("ks", "bins"),
+    [("[]", "[0, 1]"), ("[10, 0]", "[0, 1]"), ("[10]", "[1, 2]"), ("[10]", "[0, 2, 2]")],
+)
+def test_evaluation_section_rejects_invalid_values(tmp_path, ks, bins):
+    bad = VALID_YAML.replace("ks: [10, 20]", f"ks: {ks}").replace(
+        "history_bins: [0, 1, 2, 5]", f"history_bins: {bins}"
+    )
+
+    with pytest.raises(ConfigError):
         load_config(write(tmp_path, bad))

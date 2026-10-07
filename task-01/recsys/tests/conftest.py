@@ -4,7 +4,9 @@ from pathlib import Path
 import pytest
 import yaml
 
+from recsys.config import SparkConfig
 from recsys.data.download import dataset_files
+from recsys.spark import spark_session
 from tests.toy_data import META, REVIEWS, TOY_CATEGORY
 
 TESTS_ROOT = Path(__file__).parent
@@ -55,6 +57,20 @@ def toy_project(tmp_path: Path) -> Path:
             "processed_dir": "data/processed",
         },
         "split": {"val_start": "2022-10-01", "test_start": "2023-01-01", "test_end": "2023-04-01"},
+        "evaluation": {"ks": [1, 2], "history_bins": [0, 1, 2]},
+        "spark": {"driver_memory_gb": 1, "shuffle_partitions": 2, "local_dir": "data/spark-tmp"},
     }
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
     return tmp_path
+
+
+@pytest.fixture(scope="session")
+def spark(tmp_path_factory: pytest.TempPathFactory):
+    """One local SparkSession for all Spark-backed tests (startup is ~10-30 s)."""
+
+    local_dir = tmp_path_factory.mktemp("spark")
+    session = spark_session(
+        SparkConfig(driver_memory_gb=1, shuffle_partitions=2, local_dir=local_dir)
+    )
+    yield session
+    session.stop()

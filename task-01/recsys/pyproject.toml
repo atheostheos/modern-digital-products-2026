@@ -53,6 +53,7 @@ markers = [
     "unit: fast isolated tests",
     "integration: multi-module pipeline tests on synthetic data",
     "e2e: full CLI runs",
+    "spark: needs a local SparkSession (slow startup)",
 ]
 addopts = "-ra --strict-markers --cov=recsys --cov-report=term-missing --cov-fail-under=80"
 

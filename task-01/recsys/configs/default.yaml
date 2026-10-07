@@ -15,3 +15,12 @@ split:
   val_start: 2022-10-01   # val  = [val_start, test_start)  -> tuning
   test_start: 2023-01-01  # test = [test_start, test_end)   -> final numbers
   test_end: 2023-04-01
+
+evaluation:
+  ks: [10, 20]               # metric cutoffs
+  history_bins: [0, 1, 2, 5] # user segments by history length: 0 (cold), 1, 2-4, 5+
+
+spark:                       # local SparkSession for RePlay models (machine: 17 GB RAM, 10 CPUs)
+  driver_memory_gb: 8
+  shuffle_partitions: 20
+  local_dir: data/spark-tmp  # scratch space, gitignored

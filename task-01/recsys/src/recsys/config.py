@@ -1,11 +1,20 @@
 """Typed, immutable project configuration loaded from YAML."""
 
+import itertools
 from datetime import date
 from pathlib import Path
 from typing import Self
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    NonNegativeInt,
+    PositiveInt,
+    ValidationError,
+    model_validator,
+)
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "default.yaml"
@@ -55,16 +64,44 @@ class SplitConfig(_Frozen):
         return self
 
 
+class EvaluationConfig(_Frozen):
+    """Metric cutoffs and user segments by history length (lower bounds, first must be 0)."""
+
+    ks: tuple[PositiveInt, ...] = Field(min_length=1)
+    history_bins: tuple[NonNegativeInt, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _check_bins(self) -> Self:
+        bins = self.history_bins
+        if bins[0] != 0 or any(a >= b for a, b in itertools.pairwise(bins)):
+            raise ValueError("history_bins must start at 0 and be strictly increasing")
+        return self
+
+
+class SparkConfig(_Frozen):
+    """Local SparkSession settings for RePlay models."""
+
+    driver_memory_gb: PositiveInt
+    shuffle_partitions: PositiveInt
+    local_dir: Path  # Spark scratch space (kept inside the gitignored data dir)
+
+
 class Config(_Frozen):
     seed: int = 42
     results_dir: Path
     data: DataConfig
     split: SplitConfig
+    evaluation: EvaluationConfig
+    spark: SparkConfig
 
     def resolve(self, root: Path) -> Self:
         """Return a copy with every relative path anchored at ``root``."""
         return self.model_copy(
-            update={"results_dir": root / self.results_dir, "data": self.data.resolve(root)}
+            update={
+                "results_dir": root / self.results_dir,
+                "data": self.data.resolve(root),
+                "spark": self.spark.model_copy(update={"local_dir": root / self.spark.local_dir}),
+            }
         )
 
 
