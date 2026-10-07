@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, PositiveInt
+from pydantic import BaseModel, ConfigDict, Field, NonNegativeFloat, PositiveFloat, PositiveInt
 
 
 class _Spec(BaseModel):
@@ -36,6 +36,62 @@ class ItemKnnSpec(_Spec):
     weighting: Literal["tf_idf", "bm25"] | None = None
 
 
+class AlsSpec(_Spec):
+    """Implicit-feedback matrix factorization (RePlay ALSWrap on Spark MLlib ALS)."""
+
+    kind: Literal["als"]
+    rank: PositiveInt = 64
+
+
+class UserKnnSpec(_Spec):
+    """User-based collaborative filtering (implicit nearest neighbours on users)."""
+
+    kind: Literal["user_knn"]
+    num_neighbours: PositiveInt = 50
+    similarity: Literal["cosine", "bm25"] = "cosine"
+
+
+class ContentSpec(_Spec):
+    """Content-based: TF-IDF of item text + brand, reduced with TruncatedSVD (LSA);
+    user profile = mean vector of the user's (last ``profile_items``) items."""
+
+    kind: Literal["content"]
+    max_features: PositiveInt = 50_000
+    min_df: PositiveInt = 3
+    svd_components: PositiveInt = 256
+    profile_items: PositiveInt | None = None  # None = whole history
+
+
+class HybridSpec(_Spec):
+    """Weighted reciprocal rank fusion of other configured (non-hybrid) models."""
+
+    kind: Literal["hybrid"]
+    components: dict[str, PositiveFloat] = Field(min_length=1)  # model name -> weight
+    depth: PositiveInt = 100  # how many recommendations to take from each component
+    rrf_k: PositiveInt = 60
+
+
 ModelSpec = Annotated[
-    PopularitySpec | AssociationRulesSpec | ItemKnnSpec, Field(discriminator="kind")
+    PopularitySpec
+    | AssociationRulesSpec
+    | ItemKnnSpec
+    | AlsSpec
+    | UserKnnSpec
+    | ContentSpec
+    | HybridSpec,
+    Field(discriminator="kind"),
 ]
+
+
+def hybrid_reference_errors(models: dict[str, "ModelSpec"]) -> list[str]:
+    """Problems with hybrid component references (unknown names, nested hybrids)."""
+    errors = []
+    for name, spec in models.items():
+        if not isinstance(spec, HybridSpec):
+            continue
+        for component in spec.components:
+            if component not in models:
+                errors.append(f"hybrid '{name}' references unknown model '{component}'")
+            elif isinstance(models[component], HybridSpec):
+                errors.append(f"hybrid '{name}' cannot nest hybrid '{component}'")
+    return errors

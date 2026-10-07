@@ -9,10 +9,10 @@ its first ``recommend`` call; ``fit_seconds`` + ``recommend_seconds`` is the rel
 """
 
 import logging
-import time
+import time as clock
 from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime, time, timedelta
 from pathlib import Path
 from typing import Literal
 
@@ -22,7 +22,7 @@ from pyspark.sql import SparkSession
 from recsys.config import Config
 from recsys.evaluation.evaluator import EvalWindow, evaluate
 from recsys.models.base import TrainData
-from recsys.models.registry import build_model
+from recsys.models.registry import BuildContext, build_model
 
 logger = logging.getLogger(__name__)
 
@@ -66,22 +66,61 @@ def validate_models(cfg: Config, model_names: list[str]) -> None:
         raise UnknownModelError(f"Unknown model(s) {unknown}; configured: {sorted(cfg.models)}")
 
 
-def load_stage(cfg: Config, stage: Stage) -> StageData:
+@dataclass(frozen=True)
+class TrialBudget:
+    """Cheaper trials for sweeps: score a user sample and/or fit on recent history only.
+
+    Winners should be confirmed with the full budget (the default).
+    """
+
+    sample_users: int | None = None  # seeded random sample of ground-truth users
+    train_days: int | None = None  # history = last N days before the window start
+
+    def __post_init__(self) -> None:
+        for name in ("sample_users", "train_days"):
+            value = getattr(self, name)
+            if value is not None and value <= 0:
+                raise ValueError(f"{name} must be positive, got {value}")
+
+
+FULL_BUDGET = TrialBudget()
+
+
+def load_stage(cfg: Config, stage: Stage, budget: TrialBudget = FULL_BUDGET) -> StageData:
     """Train data and evaluation window for ``stage`` from the processed parquet files."""
     paths = {n: cfg.data.processed_dir / f"{n}.parquet" for n in PROCESSED_FRAMES}
     missing = [str(p) for p in paths.values() if not p.is_file()]
     if missing:
         raise FileNotFoundError(f"Processed data missing: {missing}")
     train, val, test, items = (pl.read_parquet(paths[n]) for n in PROCESSED_FRAMES)
-    history, window = (train, val) if stage == "val" else (pl.concat([train, val]), test)
+    history, window, window_start = (
+        (train, val, cfg.split.val_start)
+        if stage == "val"
+        else (pl.concat([train, val]), test, cfg.split.test_start)
+    )
+    history = _recent_history(history, window_start, budget.train_days)
+    truth = _sample_users(window.select("user_id", "item_id"), budget.sample_users, cfg.seed)
     return StageData(
         train=TrainData(interactions=history, items=items),
         window=EvalWindow(
-            ground_truth=window.select("user_id", "item_id"),
-            history=history.select("user_id", "item_id"),
-            items=items,
+            ground_truth=truth, history=history.select("user_id", "item_id"), items=items
         ),
     )
+
+
+def _recent_history(history: pl.DataFrame, window_start: date, days: int | None) -> pl.DataFrame:
+    if days is None:
+        return history
+    start = datetime.combine(window_start - timedelta(days=days), time.min)
+    return history.filter(pl.col("timestamp") >= start)
+
+
+def _sample_users(truth: pl.DataFrame, n: int | None, seed: int) -> pl.DataFrame:
+    users = truth["user_id"].unique().sort()
+    if n is None or n >= users.len():
+        return truth
+    sample = users.sample(n=n, seed=seed)
+    return truth.filter(pl.col("user_id").is_in(sample.implode()))
 
 
 def run_experiment(
@@ -96,12 +135,18 @@ def run_experiment(
 def _run_one(name: str, cfg: Config, data: StageData, spark: SparkSession) -> pl.DataFrame:
     users = data.window.ground_truth["user_id"].unique()
     k = max(cfg.evaluation.ks)
-    model = build_model(name, cfg.models[name], spark)
-    started = time.perf_counter()
-    model.fit(data.train)
-    fitted = time.perf_counter()
-    recs = model.recommend(users, k)
-    recommended = time.perf_counter()
+    ctx = BuildContext(spark=spark, seed=cfg.seed, threads=cfg.spark.cores, catalog=cfg.models)
+    model = build_model(name, cfg.models[name], ctx)
+    started = clock.perf_counter()
+    try:
+        model.fit(data.train)
+        fitted = clock.perf_counter()
+        recs = model.recommend(users, k)
+        recommended = clock.perf_counter()
+    finally:
+        # RePlay models cache Spark DataFrames and never release them; without this,
+        # caches of earlier models accumulate until Spark runs out of memory
+        _release_spark_caches(spark)
     logger.info("%s: fit %.1fs, recommend %.1fs", name, fitted - started, recommended - fitted)
     return (
         evaluate(recs, data.window, cfg.evaluation)
@@ -115,15 +160,19 @@ def _run_one(name: str, cfg: Config, data: StageData, spark: SparkSession) -> pl
     )
 
 
-def write_results(table: pl.DataFrame, results_dir: Path, stage: Stage) -> ResultPaths:
-    """Merge into ``metrics/<stage>.parquet`` (re-run models replace their rows), then
+def _release_spark_caches(spark: SparkSession) -> None:
+    spark.catalog.clearCache()
+
+
+def write_results(table: pl.DataFrame, results_dir: Path, name: str) -> ResultPaths:
+    """Merge into ``metrics/<name>.parquet`` (re-run models replace their rows), then
     regenerate the CSV and markdown views from it. Each file is written atomically."""
     out_dir = results_dir / "metrics"
     out_dir.mkdir(parents=True, exist_ok=True)
     paths = ResultPaths(
-        parquet=out_dir / f"{stage}.parquet",
-        csv=out_dir / f"{stage}.csv",
-        markdown=out_dir / f"{stage}.md",
+        parquet=out_dir / f"{name}.parquet",
+        csv=out_dir / f"{name}.csv",
+        markdown=out_dir / f"{name}.md",
     )
     if paths.parquet.is_file():
         previous = pl.read_parquet(paths.parquet)
@@ -131,7 +180,7 @@ def write_results(table: pl.DataFrame, results_dir: Path, stage: Stage) -> Resul
         table = pl.concat([kept, table], how="diagonal_relaxed")
     _atomic_write(paths.parquet, table.write_parquet)
     _atomic_write(paths.csv, table.write_csv)
-    _atomic_write(paths.markdown, lambda p: p.write_text(_markdown_summary(table, stage)))
+    _atomic_write(paths.markdown, lambda p: p.write_text(_markdown_summary(table, name)))
     logger.info("Wrote %s (+ .csv, .md)", paths.parquet)
     return paths
 
@@ -142,10 +191,10 @@ def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
     tmp.replace(path)
 
 
-def _markdown_summary(table: pl.DataFrame, stage: Stage) -> str:
+def _markdown_summary(table: pl.DataFrame, name: str) -> str:
     metrics = [f"{m}@{SUMMARY_K}" for m in SUMMARY_METRICS if f"{m}@{SUMMARY_K}" in table.columns]
     columns = ["model", "segment", "users", *metrics]
-    header = f"# {stage} metrics @{SUMMARY_K}\n\n| " + " | ".join(columns) + " |\n"
+    header = f"# {name} metrics @{SUMMARY_K}\n\n| " + " | ".join(columns) + " |\n"
     divider = "|" + "---|" * len(columns) + "\n"
     rows = "".join(
         "| " + " | ".join(_fmt(row[c]) for c in columns) + " |\n"

@@ -33,3 +33,12 @@ def test_write_results_replaces_rows_of_rerun_models(tmp_path):
     merged = pl.read_parquet(paths.parquet).sort("model")
     assert merged["HitRate@10"].to_list() == [0.1, 0.3]
     assert "| b | all |" in paths.markdown.read_text()
+
+
+def test_write_results_uses_the_given_output_name(tmp_path):
+    table = pl.DataFrame({"model": ["a"], "segment": ["all"], "users": [1], "HitRate@10": [0.1]})
+
+    paths = write_results(table, tmp_path, "val_item_knn_sweep")
+
+    assert paths.parquet.name == "val_item_knn_sweep.parquet"
+    assert "# val_item_knn_sweep metrics" in paths.markdown.read_text()

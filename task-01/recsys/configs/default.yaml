@@ -20,9 +20,12 @@ evaluation:
   ks: [10, 20]               # metric cutoffs
   history_bins: [0, 1, 2, 5] # user segments by history length: 0 (cold), 1, 2-4, 5+
 
-spark:                       # local SparkSession for RePlay models (machine: 17 GB RAM, 10 CPUs)
-  driver_memory_gb: 8
-  shuffle_partitions: 20
+# Compute limits, kept laptop-friendly (machine: 17 GB RAM, 10 CPUs): Spark runs on
+# `cores` cores and implicit / sklearn models use `cores` threads.
+spark:
+  driver_memory_gb: 4
+  shuffle_partitions: 8
+  cores: 4
   local_dir: data/spark-tmp  # scratch space, gitignored
 
 # Models compared in experiments (kind -> implementation in recsys.models.registry).

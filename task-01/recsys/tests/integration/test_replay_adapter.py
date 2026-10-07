@@ -29,6 +29,10 @@ def test_session_uses_utc(spark):
     assert spark.conf.get("spark.sql.session.timeZone") == "UTC"
 
 
+def test_session_uses_the_configured_number_of_cores(spark):
+    assert spark.sparkContext.master == "local[2]"
+
+
 def test_item_knn_recommends_unseen_items_for_known_users(spark):
     model = ReplayModel("item_knn", lambda: ItemKNN(num_neighbours=3), spark).fit(TRAIN)
 

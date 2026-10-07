@@ -1,0 +1,4 @@
+# Knob: neighbourhood size
+item_knn_k20:  {kind: item_knn, num_neighbours: 20}
+item_knn_k100: {kind: item_knn, num_neighbours: 100}
+item_knn_k300: {kind: item_knn, num_neighbours: 300}

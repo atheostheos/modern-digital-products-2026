@@ -4,16 +4,25 @@ import logging
 from pathlib import Path
 from typing import Annotated
 
+import polars as pl
 import typer
 import yaml
 
-from recsys.config import DEFAULT_CONFIG_PATH, PROJECT_ROOT, Config, ConfigError, load_config
+from recsys.config import (
+    DEFAULT_CONFIG_PATH,
+    PROJECT_ROOT,
+    Config,
+    ConfigError,
+    load_config,
+    with_models_from,
+)
 from recsys.data.download import DownloadError, download_dataset
 from recsys.data.ingest import IngestError
 from recsys.data.pipeline import prepare as run_prepare
 from recsys.data.split import SplitError
 from recsys.evaluation.runner import (
     Stage,
+    TrialBudget,
     UnknownModelError,
     load_stage,
     run_experiment,
@@ -87,22 +96,39 @@ def prepare(config: ConfigOption = DEFAULT_CONFIG_PATH, root: RootOption = PROJE
 
 @app.command("evaluate")
 def evaluate_models(
+    *,
     stage: Annotated[
         Stage, typer.Option(help="val = tune on Q4 2022, test = final Q1 2023")
     ] = "val",
     model: Annotated[
         list[str] | None, typer.Option("--model", "-m", help="Model name(s); default: all")
     ] = None,
+    models: Annotated[
+        Path | None,
+        typer.Option("--models", help="YAML mapping replacing the config's models (sweeps)"),
+    ] = None,
+    output: Annotated[
+        str | None,
+        typer.Option(help="Results name: results/metrics/<output>.*; default: the stage"),
+    ] = None,
+    sample_users: Annotated[
+        int | None, typer.Option(min=1, help="Cheap trial: score a random sample of users")
+    ] = None,
+    train_days: Annotated[
+        int | None, typer.Option(min=1, help="Cheap trial: fit on the last N days only")
+    ] = None,
     config: ConfigOption = DEFAULT_CONFIG_PATH,
     root: RootOption = PROJECT_ROOT,
 ) -> None:
-    """Fit models on the stage's train data, evaluate, and write results/metrics/<stage>.*"""
+    """Fit models on the stage's train data, evaluate, and write results/metrics/<output>.*"""
     cfg = _load_or_exit(config, root)
-    names = list(dict.fromkeys(model or cfg.models))  # dedupe, keep order
+    budget = TrialBudget(sample_users=sample_users, train_days=train_days)
     try:  # validate everything cheap before starting Spark
+        cfg = with_models_from(cfg, models) if models else cfg
+        names = list(dict.fromkeys(model or cfg.models))  # dedupe, keep order
         validate_models(cfg, names)
-        data = load_stage(cfg, stage)
-    except UnknownModelError as exc:
+        data = load_stage(cfg, stage, budget)
+    except (ConfigError, UnknownModelError) as exc:
         typer.echo(f"Error: {exc}", err=True)
         raise typer.Exit(code=1) from exc
     except FileNotFoundError as exc:
@@ -110,5 +136,7 @@ def evaluate_models(
         raise typer.Exit(code=1) from exc
     with open_spark(cfg.spark) as spark:
         table = run_experiment(cfg, data, names, spark)
-    paths = write_results(table, cfg.results_dir, stage)
+    budget_columns = {"sample_users": budget.sample_users, "train_days": budget.train_days}
+    table = table.with_columns(pl.lit(v, pl.Int64).alias(k) for k, v in budget_columns.items())
+    paths = write_results(table, cfg.results_dir, output or stage)
     typer.echo(f"{len(names)} model(s) evaluated on {stage}: {paths.markdown}")

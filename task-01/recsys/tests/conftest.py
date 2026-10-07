@@ -74,7 +74,7 @@ def spark(tmp_path_factory: pytest.TempPathFactory):
 
     local_dir = tmp_path_factory.mktemp("spark")
     session = spark_session(
-        SparkConfig(driver_memory_gb=1, shuffle_partitions=2, local_dir=local_dir)
+        SparkConfig(driver_memory_gb=1, shuffle_partitions=2, local_dir=local_dir, cores=2)
     )
     yield session
     session.stop()

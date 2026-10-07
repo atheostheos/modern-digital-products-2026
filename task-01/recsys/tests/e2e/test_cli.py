@@ -145,3 +145,58 @@ def test_evaluate_command_rejects_unknown_stage(toy_project):
     )
 
     assert result.exit_code != 0
+
+
+@pytest.mark.spark
+def test_evaluate_command_uses_models_file_and_output_name(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+    sweep = toy_project / "sweep.yaml"
+    sweep.write_text("pop_a: {kind: popularity}\npop_b: {kind: popularity, window_days: 30}\n")
+
+    result = runner.invoke(
+        app, ["evaluate", "--models", str(sweep), "--output", "val_sweep", *args]
+    )
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/metrics/val_sweep.parquet")
+    assert sorted(table["model"].unique()) == ["pop_a", "pop_b"]
+    assert not (toy_project / "results/metrics/val.parquet").exists()
+
+
+@pytest.mark.spark
+def test_evaluate_command_cheap_trial_records_its_budget(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        [
+            "evaluate",
+            "--stage",
+            "test",
+            "-m",
+            "popular",
+            "--sample-users",
+            "1",
+            "--train-days",
+            "400",
+            "--output",
+            "cheap",
+            *args,
+        ],
+    )
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/metrics/cheap.parquet")
+    overall = table.filter(pl.col("segment") == "all")
+    assert overall["users"].item() == 1
+    assert overall["sample_users"].item() == 1 and overall["train_days"].item() == 400
+
+
+def test_evaluate_command_rejects_non_positive_budget(toy_project):
+    result = runner.invoke(
+        app, ["evaluate", "--sample-users", "0", "--config", str(toy_project / "config.yaml")]
+    )
+
+    assert result.exit_code != 0

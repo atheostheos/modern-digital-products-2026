@@ -1,0 +1,3 @@
+# Knob: latent dimension (kept small: Spark ALS is the heaviest model)
+als_r16: {kind: als, rank: 16}
+als_r48: {kind: als, rank: 48}

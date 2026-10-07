@@ -29,7 +29,7 @@ def spark_session(cfg: SparkConfig) -> SparkSession:
     cfg.local_dir.mkdir(parents=True, exist_ok=True)
     session = (
         SparkSession.builder.appName(APP_NAME)
-        .master("local[*]")
+        .master(f"local[{cfg.cores}]")
         .config("spark.driver.memory", f"{cfg.driver_memory_gb}g")
         .config("spark.sql.shuffle.partitions", str(cfg.shuffle_partitions))
         .config("spark.local.dir", str(cfg.local_dir))

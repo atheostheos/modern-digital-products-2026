@@ -17,6 +17,7 @@ dependencies = [
     "replay-rec[spark]>=0.22,<0.23",
     "scikit-learn>=1.8,<2",
     "scipy>=1.18,<2",
+    "threadpoolctl>=3.7,<4",
     "typer>=0.27,<1",
 ]
 
@@ -49,6 +50,10 @@ ignore = ["PLR0913"]  # model constructors legitimately take many hyperparameter
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    # implicit converts its own BM25-weighted COO matrix internally; harmless
+    "ignore:Method expects CSR input",
+]
 markers = [
     "unit: fast isolated tests",
     "integration: multi-module pipeline tests on synthetic data",

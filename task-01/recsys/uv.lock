@@ -1876,6 +1876,7 @@ dependencies = [
     { name = "replay-rec", extra = ["spark"] },
     { name = "scikit-learn" },
     { name = "scipy" },
+    { name = "threadpoolctl" },
     { name = "typer" },
 ]
 
@@ -1900,6 +1901,7 @@ requires-dist = [
     { name = "replay-rec", extras = ["spark"], specifier = ">=0.22,<0.23" },
     { name = "scikit-learn", specifier = ">=1.8,<2" },
     { name = "scipy", specifier = ">=1.18,<2" },
+    { name = "threadpoolctl", specifier = ">=3.7,<4" },
     { name = "typer", specifier = ">=0.27,<1" },
 ]
 

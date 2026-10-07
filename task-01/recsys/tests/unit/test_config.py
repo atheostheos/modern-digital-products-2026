@@ -23,6 +23,7 @@ evaluation:
   history_bins: [0, 1, 2, 5]
 spark:
   driver_memory_gb: 4
+  cores: 3
   shuffle_partitions: 8
   local_dir: data/spark-tmp
 models:
@@ -155,4 +156,30 @@ def test_models_section_requires_at_least_one_model(tmp_path):
     bad = VALID_YAML.replace("models:\n  popular:\n    kind: popularity\n", "models: {}\n")
 
     with pytest.raises(ConfigError, match="models"):
+        load_config(write(tmp_path, bad))
+
+
+def test_spark_section_limits_cores(tmp_path):
+    config = load_config(write(tmp_path, VALID_YAML))
+
+    assert config.spark.cores == 3
+
+
+def test_default_config_caps_resources_for_a_laptop():
+    project_root = Path(__file__).resolve().parents[2]
+
+    spark = load_config(project_root / "configs" / "default.yaml").spark
+
+    assert spark.cores <= 4
+    assert spark.driver_memory_gb <= 4
+
+
+def test_main_config_rejects_hybrid_with_unknown_component(tmp_path):
+    bad = VALID_YAML.replace(
+        "models:\n  popular:\n    kind: popularity\n",
+        "models:\n  popular:\n    kind: popularity\n  mix:\n    kind: hybrid\n"
+        "    components: {ghost: 1.0}\n",
+    )
+
+    with pytest.raises(ConfigError, match="ghost"):
         load_config(write(tmp_path, bad))

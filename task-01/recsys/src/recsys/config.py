@@ -12,11 +12,12 @@ from pydantic import (
     Field,
     NonNegativeInt,
     PositiveInt,
+    TypeAdapter,
     ValidationError,
     model_validator,
 )
 
-from recsys.models.specs import ModelSpec
+from recsys.models.specs import ModelSpec, hybrid_reference_errors
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "default.yaml"
@@ -85,6 +86,7 @@ class SparkConfig(_Frozen):
 
     driver_memory_gb: PositiveInt
     shuffle_partitions: PositiveInt
+    cores: PositiveInt = 4  # also caps threads of implicit / sklearn models
     local_dir: Path  # Spark scratch space (kept inside the gitignored data dir)
 
 
@@ -97,6 +99,12 @@ class Config(_Frozen):
     spark: SparkConfig
     models: dict[str, ModelSpec] = Field(min_length=1)
 
+    @model_validator(mode="after")
+    def _check_hybrids(self) -> Self:
+        if errors := hybrid_reference_errors(self.models):
+            raise ValueError("; ".join(errors))
+        return self
+
     def resolve(self, root: Path) -> Self:
         """Return a copy with every relative path anchored at ``root``."""
         return self.model_copy(
@@ -108,8 +116,7 @@ class Config(_Frozen):
         )
 
 
-def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
-    """Load and validate a YAML config file."""
+def _read_yaml_mapping(path: Path) -> dict:
     if not path.is_file():
         raise ConfigError(f"Config file not found: {path}")
     try:
@@ -118,7 +125,31 @@ def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
         raise ConfigError(f"Malformed YAML in {path}: {exc}") from exc
     if not isinstance(raw, dict):
         raise ConfigError(f"Config root must be a mapping, got {type(raw).__name__}: {path}")
+    return raw
+
+
+def load_config(path: Path = DEFAULT_CONFIG_PATH) -> Config:
+    """Load and validate a YAML config file."""
+    raw = _read_yaml_mapping(path)
     try:
         return Config.model_validate(raw)
     except ValidationError as exc:
         raise ConfigError(f"Invalid config {path}:\n{exc}") from exc
+
+
+MODELS_ADAPTER = TypeAdapter(dict[str, ModelSpec])
+
+
+def with_models_from(cfg: Config, path: Path) -> Config:
+    """Copy of ``cfg`` whose ``models`` section is replaced by the mapping in ``path``
+    (used for hyperparameter sweeps without touching the main config)."""
+    raw = _read_yaml_mapping(path)
+    if not raw:
+        raise ConfigError(f"Models file defines no models: {path}")
+    try:
+        models = MODELS_ADAPTER.validate_python(raw)
+    except ValidationError as exc:
+        raise ConfigError(f"Invalid models file {path}:\n{exc}") from exc
+    if errors := hybrid_reference_errors(models):
+        raise ConfigError(f"Invalid models file {path}: {'; '.join(errors)}")
+    return cfg.model_copy(update={"models": models})
