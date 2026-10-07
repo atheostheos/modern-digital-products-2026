@@ -244,3 +244,56 @@ def test_analyze_command_hints_to_save_recs_first(toy_project):
 
     assert result.exit_code == 1
     assert "--save-recs" in result.output
+
+
+@pytest.mark.spark
+def test_bench_command_writes_latency_table(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+
+    result = runner.invoke(
+        app,
+        ["bench", "-m", "popular", "-m", "item_knn", "--requests", "2", "--batch-size", "2", *args],
+    )
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/benchmark/latency.parquet")
+    assert table["model"].to_list() == ["popular", "item_knn"]
+    assert {"single_p50_ms", "single_p95_ms", "batch_ms_per_user", "fit_seconds"} <= set(
+        table.columns
+    )
+
+
+@pytest.mark.spark
+def test_bench_command_adds_precomputed_lookup_when_lists_exist(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+    lists = toy_project / "data/recs/test"
+    lists.mkdir(parents=True)
+    pl.DataFrame({"user_id": ["u1"], "item_id": ["p2"], "score": [1.0]}).write_parquet(
+        lists / "hybrid.parquet"
+    )
+
+    result = runner.invoke(app, ["bench", "-m", "popular", "--requests", "1", *args])
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/benchmark/latency.parquet")
+    assert table["model"].to_list() == ["popular", "hybrid (precomputed lookup)"]
+
+
+def test_bench_command_rejects_unknown_model(toy_project):
+    result = runner.invoke(
+        app,
+        [
+            "bench",
+            "-m",
+            "nope",
+            "--config",
+            str(toy_project / "config.yaml"),
+            "--root",
+            str(toy_project),
+        ],
+    )
+
+    assert result.exit_code == 1
+    assert "Unknown model" in result.output

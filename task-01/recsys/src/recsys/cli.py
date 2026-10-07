@@ -21,6 +21,7 @@ from recsys.data.ingest import IngestError
 from recsys.data.pipeline import prepare as run_prepare
 from recsys.data.split import SplitError
 from recsys.evaluation.analysis import analyze_stage
+from recsys.evaluation.benchmark import BenchSettings, precomputed_row, run_benchmark
 from recsys.evaluation.runner import (
     SUMMARY_K,
     Stage,
@@ -176,3 +177,40 @@ def analyze(
         table, cfg.results_dir / "analysis" / stage, f"{stage} analysis @{SUMMARY_K}"
     )
     typer.echo(f"{len(saved)} model(s) analyzed: {paths.markdown}")
+
+
+BENCH_MODELS = ["trending", "also_bought", "user_knn", "als", "content"]  # one per engine
+
+
+@app.command()
+def bench(
+    *,
+    model: Annotated[
+        list[str] | None, typer.Option("--model", "-m", help="Default: one model per engine")
+    ] = None,
+    requests: Annotated[int, typer.Option(min=1, help="Single-user requests per model")] = 30,
+    batch_size: Annotated[int, typer.Option(min=1, help="Users in the batch request")] = 1000,
+    train_days: Annotated[int, typer.Option(min=1, help="Fit on the last N days")] = 730,
+    config: ConfigOption = DEFAULT_CONFIG_PATH,
+    root: RootOption = PROJECT_ROOT,
+) -> None:
+    """Serving latency: single-request p50/p95, batch cost per user, precomputed lookup."""
+    cfg = _load_or_exit(config, root)
+    names = list(dict.fromkeys(model or BENCH_MODELS))
+    try:
+        validate_models(cfg, names)
+        data = load_stage(cfg, "val", TrialBudget(train_days=train_days))
+    except UnknownModelError as exc:
+        typer.echo(f"Error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    settings = BenchSettings(requests=requests, batch_size=batch_size, seed=cfg.seed)
+    with open_spark(cfg.spark) as spark:
+        rows = run_benchmark(cfg, data, names, spark, settings)
+    precomputed = cfg.data.processed_dir.parent / "recs" / "test" / "hybrid.parquet"
+    if precomputed.is_file():
+        rows.append(precomputed_row("hybrid (precomputed lookup)", precomputed, settings))
+    title = f"Serving latency ({requests} single requests, fit on the last {train_days} days)"
+    paths = write_table(
+        pl.DataFrame(rows, strict=False), cfg.results_dir / "benchmark" / "latency", title
+    )
+    typer.echo(f"{len(rows)} benchmark row(s): {paths.markdown}")

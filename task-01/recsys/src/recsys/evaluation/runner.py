@@ -26,6 +26,7 @@ from recsys.models.base import TrainData
 from recsys.models.hybrid import fuse
 from recsys.models.registry import BuildContext, build_model
 from recsys.models.specs import HybridSpec
+from recsys.spark import clear_caches
 
 logger = logging.getLogger(__name__)
 
@@ -215,7 +216,7 @@ def _fit_and_recommend(
     finally:
         # RePlay models cache Spark DataFrames and never release them; without this,
         # caches of earlier models accumulate until Spark runs out of memory
-        _release_spark_caches(spark)
+        clear_caches(spark)
     logger.info("%s: fit %.1fs, recommend %.1fs", name, fitted - started, recommended - fitted)
     return RunOutput(recs, fitted - started, recommended - fitted)
 
@@ -236,10 +237,6 @@ def _evaluate_output(name: str, output: RunOutput, data: StageData, cfg: Config)
 def _save_recs(recs: pl.DataFrame, path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     _atomic_write(path, recs.write_parquet)
-
-
-def _release_spark_caches(spark: SparkSession) -> None:
-    spark.catalog.clearCache()
 
 
 def write_results(table: pl.DataFrame, results_dir: Path, name: str) -> ResultPaths:

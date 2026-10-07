@@ -1,7 +1,7 @@
 SAMPLE ?=          # e.g. SAMPLE=20000; off by default: hits are rare (~1%), small samples are noise
 TRAIN_DAYS ?= 730
 
-.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep analyze
+.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep analyze bench
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -36,6 +36,9 @@ evaluate-val:  ## fit on train, evaluate all models on val -> results/metrics/va
 
 evaluate-test:  ## fit on train+val, evaluate all models on test (+ saved lists) -> results/metrics/test.*
 	nice -n 10 uv run recsys evaluate --stage test --save-recs
+
+bench:  ## serving latency per engine (+ precomputed lookup) -> results/benchmark/latency.*
+	nice -n 10 uv run recsys bench
 
 analyze:  ## business / fairness / cold-start / quality tables from saved test lists -> results/analysis/
 	uv run recsys analyze --stage test

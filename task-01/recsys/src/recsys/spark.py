@@ -54,3 +54,8 @@ def open_spark(cfg: SparkConfig) -> Iterator[SparkSession]:
         yield session
     finally:
         session.stop()
+
+
+def clear_caches(spark: SparkSession) -> None:
+    """Drop all cached DataFrames (RePlay models cache and never release them)."""
+    spark.catalog.clearCache()
