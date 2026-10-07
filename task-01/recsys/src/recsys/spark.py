@@ -2,6 +2,8 @@
 
 import os
 import sys
+from collections.abc import Iterator
+from contextlib import contextmanager
 
 from pyspark.sql import SparkSession
 from replay.utils.session_handler import State
@@ -42,3 +44,13 @@ def spark_session(cfg: SparkConfig) -> SparkSession:
     session.sparkContext.setLogLevel(LOG_LEVEL)
     State(session)
     return session
+
+
+@contextmanager
+def open_spark(cfg: SparkConfig) -> Iterator[SparkSession]:
+    """``spark_session`` that is stopped when the block exits (CLI runs)."""
+    session = spark_session(cfg)
+    try:
+        yield session
+    finally:
+        session.stop()

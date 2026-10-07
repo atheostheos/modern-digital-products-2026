@@ -16,6 +16,8 @@ from pydantic import (
     model_validator,
 )
 
+from recsys.models.specs import ModelSpec
+
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "configs" / "default.yaml"
 
@@ -93,6 +95,7 @@ class Config(_Frozen):
     split: SplitConfig
     evaluation: EvaluationConfig
     spark: SparkConfig
+    models: dict[str, ModelSpec] = Field(min_length=1)
 
     def resolve(self, root: Path) -> Self:
         """Return a copy with every relative path anchored at ``root``."""

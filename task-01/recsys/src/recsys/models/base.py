@@ -6,6 +6,12 @@ from typing import Protocol, Self
 import polars as pl
 
 REC_COLUMNS = ["user_id", "item_id", "score"]
+REC_SCHEMA = {"user_id": pl.String, "item_id": pl.String, "score": pl.Float64}
+
+
+def empty_recs() -> pl.DataFrame:
+    """A typed, empty recommendations frame."""
+    return pl.DataFrame(schema=REC_SCHEMA)
 
 
 @dataclass(frozen=True)

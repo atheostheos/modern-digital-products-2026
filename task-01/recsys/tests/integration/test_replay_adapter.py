@@ -3,7 +3,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
-from replay.models import ItemKNN, PopRec
+from replay.models import AssociationRulesItemRec, ItemKNN, PopRec
 
 from recsys.config import SparkConfig
 from recsys.models.base import TrainData
@@ -77,3 +77,38 @@ def test_session_reapplies_utc_when_reused(spark):
     )
 
     assert reused.conf.get("spark.sql.session.timeZone") == "UTC"
+
+
+def test_association_rules_recommend_items_co_reviewed_by_other_users(spark):
+    # a & b are co-reviewed by u1, u2, u3; c with a by u2, u3. u4 reviewed only a.
+    rows = [
+        ("u1", "a"),
+        ("u1", "b"),
+        ("u2", "a"),
+        ("u2", "b"),
+        ("u2", "c"),
+        ("u3", "a"),
+        ("u3", "b"),
+        ("u3", "c"),
+        ("u4", "a"),
+        ("u5", "d"),
+    ]
+    interactions = pl.DataFrame(
+        {
+            "user_id": [u for u, _ in rows],
+            "item_id": [i for _, i in rows],
+            "timestamp": [datetime(2022, 1, 1)] * len(rows),
+            "rating": [5.0] * len(rows),
+        }
+    )
+    model = ReplayModel(
+        "also_bought",
+        lambda: AssociationRulesItemRec(
+            session_column="user_id", min_item_count=1, min_pair_count=2
+        ),
+        spark,
+    ).fit(TrainData(interactions=interactions, items=ITEMS))
+
+    recs = model.recommend(pl.Series(["u4"]), k=2)
+
+    assert recs["item_id"].to_list() == ["b", "c"]  # b co-occurs with a more often than c

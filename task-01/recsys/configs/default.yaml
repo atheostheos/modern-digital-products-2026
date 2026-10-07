@@ -24,3 +24,12 @@ spark:                       # local SparkSession for RePlay models (machine: 17
   driver_memory_gb: 8
   shuffle_partitions: 20
   local_dir: data/spark-tmp  # scratch space, gitignored
+
+# Models compared in experiments (kind -> implementation in recsys.models.registry).
+models:
+  popular:            {kind: popularity}
+  trending_90d:       {kind: popularity, window_days: 90}
+  category_popular:   {kind: popularity, key: category}
+  brand_popular:      {kind: popularity, key: brand}
+  also_bought:        {kind: association_rules, min_item_count: 5, min_pair_count: 3}
+  item_knn:           {kind: item_knn, num_neighbours: 10}

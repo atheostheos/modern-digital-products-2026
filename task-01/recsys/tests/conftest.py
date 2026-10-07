@@ -59,6 +59,10 @@ def toy_project(tmp_path: Path) -> Path:
         "split": {"val_start": "2022-10-01", "test_start": "2023-01-01", "test_end": "2023-04-01"},
         "evaluation": {"ks": [1, 2], "history_bins": [0, 1, 2]},
         "spark": {"driver_memory_gb": 1, "shuffle_partitions": 2, "local_dir": "data/spark-tmp"},
+        "models": {
+            "popular": {"kind": "popularity"},
+            "item_knn": {"kind": "item_knn", "num_neighbours": 5},
+        },
     }
     (tmp_path / "config.yaml").write_text(yaml.safe_dump(config))
     return tmp_path

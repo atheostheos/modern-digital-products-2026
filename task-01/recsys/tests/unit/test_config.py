@@ -25,6 +25,9 @@ spark:
   driver_memory_gb: 4
   shuffle_partitions: 8
   local_dir: data/spark-tmp
+models:
+  popular:
+    kind: popularity
 """
 
 
@@ -145,4 +148,11 @@ def test_evaluation_section_rejects_invalid_values(tmp_path, ks, bins):
     )
 
     with pytest.raises(ConfigError):
+        load_config(write(tmp_path, bad))
+
+
+def test_models_section_requires_at_least_one_model(tmp_path):
+    bad = VALID_YAML.replace("models:\n  popular:\n    kind: popularity\n", "models: {}\n")
+
+    with pytest.raises(ConfigError, match="models"):
         load_config(write(tmp_path, bad))

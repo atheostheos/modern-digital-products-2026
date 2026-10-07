@@ -1,3 +1,7 @@
+from contextlib import contextmanager
+
+import polars as pl
+import pytest
 from typer.testing import CliRunner
 
 from recsys import cli
@@ -84,3 +88,60 @@ def test_prepare_command_reports_empty_split_windows(toy_project):
 
     assert result.exit_code == 1
     assert "split dates" in result.output
+
+
+@pytest.fixture
+def shared_spark(monkeypatch, spark):
+    """Make the CLI reuse the test session instead of creating and stopping its own."""
+
+    @contextmanager
+    def reuse(cfg):
+        yield spark
+
+    monkeypatch.setattr(cli, "open_spark", reuse)
+
+
+@pytest.mark.spark
+def test_evaluate_command_writes_metrics_for_selected_models(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+
+    result = runner.invoke(
+        app, ["evaluate", "--stage", "test", "-m", "popular", "-m", "popular", *args]
+    )
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/metrics/test.parquet")
+    assert table.filter(pl.col("segment") == "all")["model"].to_list() == ["popular"]  # deduped
+    assert (toy_project / "results/metrics/test.md").is_file()
+
+
+def test_evaluate_command_rejects_unknown_model_before_starting_spark(toy_project, monkeypatch):
+    def no_spark(cfg):
+        raise AssertionError("Spark must not start for invalid input")
+
+    monkeypatch.setattr(cli, "open_spark", no_spark)
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+
+    result = runner.invoke(app, ["evaluate", "-m", "nope", *args])
+
+    assert result.exit_code == 1
+    assert "Unknown model" in result.output
+
+
+def test_evaluate_command_hints_to_prepare_when_processed_data_missing(toy_project, monkeypatch):
+    monkeypatch.setattr(cli, "open_spark", lambda cfg: (_ for _ in ()).throw(AssertionError))
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+
+    result = runner.invoke(app, ["evaluate", "-m", "popular", *args])
+
+    assert result.exit_code == 1
+    assert "make prepare" in result.output
+
+
+def test_evaluate_command_rejects_unknown_stage(toy_project):
+    result = runner.invoke(
+        app, ["evaluate", "--stage", "prod", "--config", str(toy_project / "config.yaml")]
+    )
+
+    assert result.exit_code != 0
