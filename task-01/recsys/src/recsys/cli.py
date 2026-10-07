@@ -20,7 +20,9 @@ from recsys.data.download import DownloadError, download_dataset
 from recsys.data.ingest import IngestError
 from recsys.data.pipeline import prepare as run_prepare
 from recsys.data.split import SplitError
+from recsys.evaluation.analysis import analyze_stage
 from recsys.evaluation.runner import (
+    SUMMARY_K,
     Stage,
     TrialBudget,
     UnknownModelError,
@@ -28,6 +30,7 @@ from recsys.evaluation.runner import (
     run_experiment,
     validate_models,
     write_results,
+    write_table,
 )
 from recsys.spark import open_spark
 
@@ -144,3 +147,32 @@ def evaluate_models(
     table = table.with_columns(pl.lit(v, pl.Int64).alias(k) for k, v in budget_columns.items())
     paths = write_results(table, cfg.results_dir, output or stage)
     typer.echo(f"{len(names)} model(s) evaluated on {stage}: {paths.markdown}")
+
+
+@app.command()
+def analyze(
+    stage: Annotated[Stage, typer.Option(help="Which saved run to analyze")] = "test",
+    config: ConfigOption = DEFAULT_CONFIG_PATH,
+    root: RootOption = PROJECT_ROOT,
+) -> None:
+    """Business / fairness / cold-start / quality analysis of saved recommendation lists."""
+    cfg = _load_or_exit(config, root)
+    recs_dir = cfg.data.processed_dir.parent / "recs" / stage
+    files = sorted(recs_dir.glob("*.parquet"))
+    if not files:
+        typer.echo(
+            f"Error: no saved recommendations in {recs_dir}. "
+            f"Run `recsys evaluate --stage {stage} --save-recs` first.",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+    order = {name: i for i, name in enumerate(cfg.models)}
+    saved = {
+        f.stem: pl.read_parquet(f)
+        for f in sorted(files, key=lambda f: (order.get(f.stem, len(order)), f.stem))
+    }
+    table = analyze_stage(load_stage(cfg, stage).window, saved, k=SUMMARY_K)
+    paths = write_table(
+        table, cfg.results_dir / "analysis" / stage, f"{stage} analysis @{SUMMARY_K}"
+    )
+    typer.echo(f"{len(saved)} model(s) analyzed: {paths.markdown}")

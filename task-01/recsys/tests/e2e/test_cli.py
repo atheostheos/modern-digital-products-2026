@@ -215,3 +215,32 @@ def test_evaluate_command_can_save_top_k_recommendations(toy_project, shared_spa
     recs = pl.read_parquet(toy_project / "data/recs/test/popular.parquet")
     assert recs.columns == ["user_id", "item_id", "score"]
     assert recs.group_by("user_id").len()["len"].max() <= 2  # toy config: max k = 2
+
+
+@pytest.mark.spark
+def test_analyze_command_summarizes_saved_recommendations(toy_project, shared_spark):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+    assert (
+        runner.invoke(
+            app, ["evaluate", "--stage", "test", "-m", "popular", "--save-recs", *args]
+        ).exit_code
+        == 0
+    )
+
+    result = runner.invoke(app, ["analyze", "--stage", "test", *args])
+
+    assert result.exit_code == 0, result.output
+    table = pl.read_parquet(toy_project / "results/analysis/test.parquet")
+    assert table["model"].to_list()[1:] == ["popular"]
+    assert "captured_revenue_share" in table.columns
+
+
+def test_analyze_command_hints_to_save_recs_first(toy_project):
+    args = ["--config", str(toy_project / "config.yaml"), "--root", str(toy_project)]
+    assert runner.invoke(app, ["prepare", *args]).exit_code == 0
+
+    result = runner.invoke(app, ["analyze", "--stage", "test", *args])
+
+    assert result.exit_code == 1
+    assert "--save-recs" in result.output

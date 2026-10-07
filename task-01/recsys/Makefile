@@ -1,7 +1,7 @@
 SAMPLE ?=          # e.g. SAMPLE=20000; off by default: hits are rare (~1%), small samples are noise
 TRAIN_DAYS ?= 730
 
-.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep
+.PHONY: help setup lint format test check clean data prepare eda evaluate-val evaluate-test sweep analyze
 
 help:  ## list targets
 	@grep -E '^[a-z-]+:.*## ' $(MAKEFILE_LIST) | awk -F ':.*## ' '{printf "  %-10s %s\n", $$1, $$2}'
@@ -34,8 +34,11 @@ eda:  ## execute notebooks/01_eda.ipynb in place (figures -> results/figures/)
 evaluate-val:  ## fit on train, evaluate all models on val -> results/metrics/val.*
 	uv run recsys evaluate --stage val
 
-evaluate-test:  ## fit on train+val, evaluate all models on test -> results/metrics/test.*
-	uv run recsys evaluate --stage test
+evaluate-test:  ## fit on train+val, evaluate all models on test (+ saved lists) -> results/metrics/test.*
+	nice -n 10 uv run recsys evaluate --stage test --save-recs
+
+analyze:  ## business / fairness / cold-start / quality tables from saved test lists -> results/analysis/
+	uv run recsys analyze --stage test
 
 sweep:  ## one cheap sweep, low CPU priority: make sweep NAME=item_knn [TRAIN_DAYS=730 SAMPLE=]
 	@test -n "$(NAME)" || (echo "usage: make sweep NAME=<configs/sweeps/NAME.yaml>"; exit 1)

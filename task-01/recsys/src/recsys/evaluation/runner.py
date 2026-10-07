@@ -263,6 +263,27 @@ def write_results(table: pl.DataFrame, results_dir: Path, name: str) -> ResultPa
     return paths
 
 
+def write_table(table: pl.DataFrame, stem: Path, title: str) -> ResultPaths:
+    """Write ``<stem>.parquet`` (source of truth), ``.csv`` and a full ``.md`` table."""
+    stem.parent.mkdir(parents=True, exist_ok=True)
+    paths = ResultPaths(
+        parquet=stem.with_suffix(".parquet"),
+        csv=stem.with_suffix(".csv"),
+        markdown=stem.with_suffix(".md"),
+    )
+    _atomic_write(paths.parquet, table.write_parquet)
+    _atomic_write(paths.csv, table.write_csv)
+    _atomic_write(paths.markdown, lambda p: p.write_text(_markdown(table, title)))
+    return paths
+
+
+def _markdown(table: pl.DataFrame, title: str) -> str:
+    header = f"# {title}\n\n| " + " | ".join(table.columns) + " |\n"
+    divider = "|" + "---|" * len(table.columns) + "\n"
+    rows = "".join("| " + " | ".join(_fmt(v) for v in row) + " |\n" for row in table.iter_rows())
+    return header + divider + rows
+
+
 def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
     tmp = path.with_name(f".{path.name}.tmp")
     write(tmp)
@@ -272,13 +293,7 @@ def _atomic_write(path: Path, write: Callable[[Path], object]) -> None:
 def _markdown_summary(table: pl.DataFrame, name: str) -> str:
     metrics = [f"{m}@{SUMMARY_K}" for m in SUMMARY_METRICS if f"{m}@{SUMMARY_K}" in table.columns]
     columns = ["model", "segment", "users", *metrics]
-    header = f"# {name} metrics @{SUMMARY_K}\n\n| " + " | ".join(columns) + " |\n"
-    divider = "|" + "---|" * len(columns) + "\n"
-    rows = "".join(
-        "| " + " | ".join(_fmt(row[c]) for c in columns) + " |\n"
-        for row in table.select(columns).iter_rows(named=True)
-    )
-    return header + divider + rows
+    return _markdown(table.select(columns), f"{name} metrics @{SUMMARY_K}")
 
 
 def _fmt(value: object) -> str:
