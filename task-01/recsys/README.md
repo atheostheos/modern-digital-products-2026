@@ -11,6 +11,9 @@ Requires [uv](https://docs.astral.sh/uv/) (Python 3.12 is installed automaticall
 
 ```bash
 make setup     # install locked dependencies
+make data      # download raw reviews + metadata (~2.2 GB, cached)
+make prepare   # processed splits + results/data/dataset_stats.json
+make eda       # execute the EDA notebook -> results/figures/
 make check     # lint + tests (coverage >= 80%)
 make help      # all targets
 uv run recsys --help

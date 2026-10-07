@@ -1,3 +1,4 @@
+from datetime import date
 from pathlib import Path
 
 import pytest
@@ -6,11 +7,17 @@ from recsys.config import Config, ConfigError, load_config
 
 VALID_YAML = """
 seed: 7
+results_dir: results
 data:
   hf_repo: McAuley-Lab/Amazon-Reviews-2023
   category: Musical_Instruments
-  raw_dir: data/raw
+  download_dir: data
+  interim_dir: data/interim
   processed_dir: data/processed
+split:
+  val_start: 2022-10-01
+  test_start: 2023-01-01
+  test_end: 2023-04-01
 """
 
 
@@ -26,7 +33,8 @@ def test_loads_valid_yaml_into_typed_config(tmp_path):
     assert isinstance(config, Config)
     assert config.seed == 7
     assert config.data.category == "Musical_Instruments"
-    assert config.data.raw_dir == Path("data/raw")
+    assert config.data.download_dir == Path("data")
+    assert config.split.test_start == date(2023, 1, 1)
 
 
 def test_relative_paths_resolve_against_given_root(tmp_path):
@@ -34,9 +42,21 @@ def test_relative_paths_resolve_against_given_root(tmp_path):
 
     resolved = config.data.resolve(root=tmp_path)
 
-    assert resolved.raw_dir == tmp_path / "data/raw"
+    assert resolved.download_dir == tmp_path / "data"
+    assert resolved.interim_dir == tmp_path / "data/interim"
     assert resolved.processed_dir == tmp_path / "data/processed"
-    assert config.data.raw_dir == Path("data/raw")  # original is not mutated
+    assert config.data.download_dir == Path("data")  # original is not mutated
+
+
+def test_config_resolve_anchors_data_and_results_paths(tmp_path):
+    config = load_config(write(tmp_path, VALID_YAML))
+
+    resolved = config.resolve(root=tmp_path)
+
+    assert resolved.results_dir == tmp_path / "results"
+    assert resolved.data.processed_dir == tmp_path / "data/processed"
+    assert resolved.split == config.split
+    assert config.results_dir == Path("results")
 
 
 def test_config_is_immutable(tmp_path):
@@ -79,3 +99,22 @@ def test_default_config_file_is_valid():
 def test_malformed_yaml_raises_config_error(tmp_path):
     with pytest.raises(ConfigError, match="YAML"):
         load_config(write(tmp_path, "data: [unclosed\n"))
+
+
+@pytest.mark.parametrize(
+    ("val_start", "test_start", "test_end"),
+    [
+        ("2023-01-01", "2023-01-01", "2023-04-01"),  # empty validation window
+        ("2022-10-01", "2023-04-01", "2023-01-01"),  # test ends before it starts
+        ("2023-02-01", "2023-01-01", "2023-04-01"),  # validation after test
+    ],
+)
+def test_split_dates_must_be_strictly_increasing(tmp_path, val_start, test_start, test_end):
+    bad = (
+        VALID_YAML.replace("2022-10-01", val_start)
+        .replace("test_start: 2023-01-01", f"test_start: {test_start}")
+        .replace("2023-04-01", test_end)
+    )
+
+    with pytest.raises(ConfigError, match="val_start < test_start < test_end"):
+        load_config(write(tmp_path, bad))

@@ -1,0 +1,61 @@
+{
+  "raw_reviews": 3017439,
+  "dropped_after_test_end": 43355,
+  "interactions": {
+    "interactions": 2975551,
+    "users": 1762679,
+    "items": 213571,
+    "density": 7.904090181671583e-06,
+    "first_timestamp": "1999-08-26 02:51:32",
+    "last_timestamp": "2023-09-12 19:25:04.987000",
+    "interactions_per_user_mean": 1.6880844441897815,
+    "interactions_per_item_median": 2.0,
+    "users_with_1_interaction_share": 0.7485435521725737,
+    "users_with_5plus_interactions_share": 0.046744756135405255,
+    "top_20pct_items_interaction_share": 0.855210009843555
+  },
+  "train": {
+    "interactions": 2764016,
+    "users": 1648272,
+    "items": 201372,
+    "density": 8.327460629989259e-06,
+    "first_timestamp": "1999-08-26 02:51:32",
+    "last_timestamp": "2022-09-30 23:59:42.009000",
+    "interactions_per_user_mean": 1.676917401982197,
+    "interactions_per_item_median": 2.0,
+    "users_with_1_interaction_share": 0.7499429705776717,
+    "users_with_5plus_interactions_share": 0.04601607016317695,
+    "top_20pct_items_interaction_share": 0.8550898402903601
+  },
+  "items_in_meta": 213593,
+  "interaction_items_missing_from_meta": 0,
+  "distinct_brands": 26284,
+  "distinct_categories": 566,
+  "distinct_top_categories": 40,
+  "item_features": {
+    "brand": 0.9833515143286531,
+    "category": 0.9111675008076108,
+    "price": 0.39738193667395466,
+    "bought_together": 0.0
+  },
+  "splits": {
+    "val": {
+      "interactions": 82350,
+      "users": 62281,
+      "items": 25624,
+      "users_with_history_1plus_share": 0.30563093078145825,
+      "users_with_history_2plus_share": 0.19036303206435348,
+      "users_with_history_5plus_share": 0.08806859234758595,
+      "interactions_on_unseen_items_share": 0.15759562841530056
+    },
+    "test": {
+      "interactions": 85830,
+      "users": 65872,
+      "items": 26574,
+      "users_with_history_1plus_share": 0.3266334709740102,
+      "users_with_history_2plus_share": 0.2039865193101773,
+      "users_with_history_5plus_share": 0.09213322807869809,
+      "interactions_on_unseen_items_share": 0.12545729931259467
+    }
+  }
+}

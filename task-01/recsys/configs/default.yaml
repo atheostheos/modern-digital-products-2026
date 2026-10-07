@@ -1,8 +1,17 @@
 # Default experiment config. Relative paths are resolved against the project root.
 seed: 42
+results_dir: results  # committed, machine-generated tables and figures
 
 data:
   hf_repo: McAuley-Lab/Amazon-Reviews-2023
   category: Musical_Instruments
-  raw_dir: data/raw
-  processed_dir: data/processed
+  download_dir: data            # raw JSONL lands in data/raw/{review,meta}_categories/
+  interim_dir: data/interim     # typed parquet straight from raw
+  processed_dir: data/processed # model-ready splits + item table
+
+# Global temporal split. Reviews after test_end are dropped: monthly volume falls
+# from ~20-30k to <5k after 2023-04 (data collection tail, not real demand).
+split:
+  val_start: 2022-10-01   # val  = [val_start, test_start)  -> tuning
+  test_start: 2023-01-01  # test = [test_start, test_end)   -> final numbers
+  test_end: 2023-04-01
