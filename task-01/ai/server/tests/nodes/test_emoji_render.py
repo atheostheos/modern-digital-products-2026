@@ -33,3 +33,15 @@ def test_missing_font_returns_none(tmp_path):
 
 def test_empty_text_returns_none():
     assert render_emoji("") is None
+
+
+def test_render_errors_return_none(monkeypatch, tmp_path):
+    font = tmp_path / "font.ttc"
+    font.write_bytes(b"")
+
+    def broken_font(*args, **kwargs):
+        raise ValueError("unsupported glyph")
+
+    monkeypatch.setattr("tdml.nodes.emoji_render.ImageFont.truetype", broken_font)
+
+    assert render_emoji("🌧️", font_path=font) is None

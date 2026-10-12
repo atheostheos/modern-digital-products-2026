@@ -28,7 +28,7 @@ def render_emoji(emoji: str, font_path: str | Path = APPLE_EMOJI_FONT) -> bytes 
             (CANVAS // 2, CANVAS // 2), emoji, font=font, embedded_color=True, anchor="mm"
         )
         image = image.resize((EMOJI_SIZE, EMOJI_SIZE), Image.Resampling.LANCZOS)
-    except OSError as exc:  # unsupported glyph or font problem: the visuals simply skip the burst
+    except (OSError, ValueError) as exc:  # unsupported glyph or font problem: the visuals skip the burst
         logger.warning("emoji render failed for %r: %s", emoji, exc)
         return None
     buffer = io.BytesIO()

@@ -81,8 +81,17 @@ def fallback_emoji(valence: float) -> str:
 
 
 def pick_scene(answer: str) -> str | None:
+    """The scene word mentioned first in the answer ("ocean, not storm" -> ocean)."""
     lowered = answer.lower()
-    return next((scene for scene in SCENES if scene in lowered), None)
+    found = [(lowered.find(scene), scene) for scene in SCENES if scene in lowered]
+    return min(found)[1] if found else None
+
+
+def tokens_per_second(responses: list[Any]) -> float | None:
+    """Generation speed over all calls; None when Ollama reported no counts or durations."""
+    tokens = sum(response.eval_count or 0 for response in responses)
+    seconds = sum(response.eval_duration or 0 for response in responses) / NS_PER_S
+    return round(tokens / seconds, 1) if tokens and seconds else None
 
 
 def pick_emoji(answer: str) -> str | None:
@@ -118,7 +127,7 @@ class LlmNode:
         )
         self._client = client
 
-    def _ask(self, system: str, sentence: str) -> tuple[str, Any]:
+    def _ask(self, system: str, sentence: str) -> tuple[str, Any]:  # (answer text, raw response)
         response = self._client.chat(
             model=self._model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": sentence}],
@@ -134,11 +143,10 @@ class LlmNode:
         scene = emoji = None
         tokens_per_s = None
         if speech:
-            scene_answer, _ = self._ask(SCENE_PROMPT, speech)
-            emoji_answer, response = self._ask(EMOJI_PROMPT, speech)
+            scene_answer, scene_response = self._ask(SCENE_PROMPT, speech)
+            emoji_answer, emoji_response = self._ask(EMOJI_PROMPT, speech)
             scene, emoji = pick_scene(scene_answer), pick_emoji(emoji_answer)
-            eval_s = (response.eval_duration or 0) / NS_PER_S
-            tokens_per_s = round(response.eval_count / eval_s, 1) if eval_s else None
+            tokens_per_s = tokens_per_second([scene_response, emoji_response])
         fallback = [name for name, value in (("scene", scene), ("emoji", emoji)) if value is None]
         scene = scene or fallback_scene(valence)
         emoji = emoji or fallback_emoji(valence)

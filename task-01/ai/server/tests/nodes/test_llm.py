@@ -127,3 +127,47 @@ def test_real_ollama_directs_a_rainy_sentence():
     assert result["scene"] in SCENES
     assert result["emoji"]
     assert result["emoji_png"]
+
+
+class CountingClient(FakeClient):
+    """Like FakeClient, but each prompt reports its own token count and duration (or None)."""
+
+    def __init__(self, scene_eval: tuple, emoji_eval: tuple) -> None:
+        super().__init__()
+        self.evals = {"scene": scene_eval, "emoji": emoji_eval}
+
+    def chat(self, **kwargs) -> NS:
+        reply = super().chat(**kwargs)
+        kind = "emoji" if "emoji" in kwargs["messages"][0]["content"].lower() else "scene"
+        reply.eval_count, reply.eval_duration = self.evals[kind]
+        return reply
+
+
+def make_counting_node(scene_eval: tuple, emoji_eval: tuple) -> LlmNode:
+    client = CountingClient(scene_eval, emoji_eval)
+    node = LlmNode(client_factory=lambda host: client, emoji_renderer=fake_renderer)
+    node.load()
+    return node
+
+
+def test_tokens_per_s_covers_both_prompts():
+    node = make_counting_node(scene_eval=(9, NS_PER_S // 10), emoji_eval=(3, NS_PER_S // 10))
+
+    result = node.infer(scene_json("Waves crash on the shore."))
+
+    assert result["tokens_per_s"] == 60.0  # 12 tokens in 0.2 s
+
+
+def test_missing_token_counts_give_no_speed_but_a_valid_reply():
+    node = make_counting_node(scene_eval=(None, None), emoji_eval=(None, NS_PER_S // 10))
+
+    result = node.infer(scene_json("Waves crash on the shore."))
+
+    assert result["tokens_per_s"] is None
+    assert result["scene"] == "storm"
+
+
+def test_scene_mentioned_first_in_the_answer_wins():
+    node, _ = make_node(scene_reply="Ocean, definitely not storm.")
+
+    assert node.infer(scene_json("Waves crash on the shore."))["scene"] == "ocean"
