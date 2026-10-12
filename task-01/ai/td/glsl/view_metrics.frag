@@ -1,6 +1,7 @@
 #include <glsl_common>
 // Server latency history per node on a log scale (1-1000 ms); the table is a Text TOP over this.
-// Input 0: trail of <node>_p50_ms (CHOP to TOP, N x 5 rows: gesture classify speech sentiment llm).
+// Input 0: trail of <node>_p50_ms (CHOP to TOP, N x 5 rows, channel 0 = bottom row:
+// gesture, classify, speech, sentiment, llm). N must stay <= 1280 (Non-Commercial texture cap).
 out vec4 fragColor;
 
 const vec2 PLOT_LO = vec2(32.0, 268.0);  // top-left origin

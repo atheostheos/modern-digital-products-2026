@@ -4,7 +4,7 @@
 uniform float uValence;
 out vec4 fragColor;
 
-const vec2 PLOT_LO = vec2(32.0, 96.0);   // top-left origin
+const vec2 PLOT_LO = vec2(32.0, 124.0);  // top-left origin (room for a 2-line quote above)
 const vec2 PLOT_HI = vec2(608.0, 352.0);
 const float GAUGE_Y = 400.0;
 

@@ -9,6 +9,8 @@ Text TOP overlays -> null_view -> out_view (640x480). Rebuilding replaces the CO
 
 PARENT = '/project1'
 W, H = 640, 480
+DASH_W, DASH_H = 1280, 640  # TouchDesigner Non-Commercial caps textures at 1280x1280
+ALWAYS = {'cooktype': 'always'}  # time-based CHOPs (lag/trail) must cook every frame, even when not displayed
 IN_X, PREP_X, GLSL_X = -350, -175, 0
 ROW = -125
 UI_FONT, MONO_FONT = 'Avenir Next', 'Menlo'
@@ -35,11 +37,12 @@ VIEWS = {
 				"for r in range(1, op('in_hands').numRows)) or 'no hands'")]),
 	'view_classify': dict(pos=(700, -25), title='IMAGE  ·  MobileNetV3-Small (ImageNet-1k)',
 		inputs=[('DAT', 'in_top'), ('CHOP', 'in_classes')],
-		prep=[('lagCHOP', 'lag_classes', 'in_classes', {'lag1': 0.25, 'lag2': 0.25})],
-		uniforms=[('uScores', [ch('lag_classes', 'score%d' % i) for i in range(1, 5)]),
-			('uScore5', [ch('lag_classes', 'score5')])],
+		prep=[('lagCHOP', 'lag_classes', 'in_classes', {'lag1': 0.25, 'lag2': 0.25}),
+			('nullCHOP', 'null_classes', 'lag_classes', ALWAYS)],
+		uniforms=[('uScores', [ch('null_classes', 'score%d' % i) for i in range(1, 5)]),
+			('uScore5', [ch('null_classes', 'score5')])],
 		texts=[dict(name='text_labels', font=UI_FONT, size=24, color=(0.92, 0.93, 0.95), align=('left', 'top'),
-			pos=(32, -92), linespacing=46,
+			pos=(32, -92), linespacing=28,
 			expr="'\\n'.join('{}   {:.0%}'.format(op('in_top')[r, 'label'].val, float(op('in_top')[r, 'score'].val)) "
 				"for r in range(1, op('in_top').numRows))")]),
 	'view_speech': dict(pos=(525, -200), title='SPEECH  ·  faster-whisper tiny.en + Silero VAD',
@@ -47,7 +50,7 @@ VIEWS = {
 		prep=[('lfoCHOP', 'lfo_pulse', None, {'frequency': 1.5, 'amp': 0.5, 'offset': 0.5})],
 		uniforms=[('uSpeaking', [ch('in_speech', 'speaking')]), ('uPulse', [ch('lfo_pulse', 'chan1')])],
 		texts=[dict(name='text_transcript', font=UI_FONT, size=24, color=(0.95, 0.95, 0.97), align=('left', 'bottom'),
-				pos=(36, 92), wordwrap=True, expr="'\\n'.join(op('in_transcript').text.splitlines()[-6:])"),
+				pos=(36, 92), wordwrap=True, expr="'\\n'.join(op('in_transcript').text.splitlines()[-3:])"),
 			dict(name='text_partial', font=UI_FONT, size=20, color=(0.55, 0.58, 0.63), align=('left', 'bottom'),
 				pos=(36, 26), expr="op('in_partial').text or ('listening…' if " + ch('in_speech', 'speaking') + " else '')")]),
 	'view_sentiment': dict(pos=(700, -200), title='SENTIMENT  ·  DistilBERT SST-2',
@@ -55,13 +58,14 @@ VIEWS = {
 		prep=[('selectCHOP', 'select_valence', 'in_sentiment', {'channames': 'valence'}),
 			('lagCHOP', 'lag_valence', 'select_valence', {'lag1': 0.4, 'lag2': 0.4}),
 			('trailCHOP', 'trail_valence', 'lag_valence', {'wlength': 600, 'wlengthunit': 'frames'}),
-			('choptoTOP', 'chopto_trail', None, {'chop': 'trail_valence', 'dataformat': 'r', 'format': 'rgba32float'})],
+			('nullCHOP', 'null_trail', 'trail_valence', ALWAYS),
+			('choptoTOP', 'chopto_trail', None, {'chop': 'null_trail', 'dataformat': 'r', 'format': 'rgba32float'})],
 		glsl_inputs=['chopto_trail'],
 		uniforms=[('uValence', [ch('lag_valence', 'valence')])],
 		texts=[dict(name='text_value', font=UI_FONT, size=30, color=(1, 1, 1), align=('left', 'bottom'), pos=(32, 20),
 				expr="'{}   {:+.2f}'.format(op('in_label').text or '—', " + ch('in_sentiment', 'valence') + ")"),
 			dict(name='text_sentence', font=UI_FONT, size=18, color=(0.75, 0.77, 0.8), align=('left', 'top'),
-				pos=(32, -52), expr="'“{}”'.format(op('in_text').text) if op('in_text').text else ''")]),
+				pos=(32, -52), wordwrap=True, expr="'“{}”'.format(op('in_text').text) if op('in_text').text else ''")]),
 	'view_llm': dict(pos=(525, -375), title='NARRATOR  ·  gemma3:1b via Ollama (CPU)',
 		inputs=[('DAT', 'in_caption'), ('CHOP', 'in_llm'), ('CHOP', 'in_sentiment')],
 		prep=[('datexecuteDAT', 'typewriter', 'in_caption',
@@ -72,18 +76,19 @@ VIEWS = {
 			dict(name='text_stats', font=UI_FONT, size=16, color=(0.6, 0.63, 0.68), align=('right', 'bottom'),
 				pos=(-24, 52), expr="'{:.0f} tok/s   ·   {:.0f} ms'.format(" + ch('in_llm', 'tokens_per_s') + ", "
 				+ ch('in_llm', 'latency_ms') + ")")]),
-	'view_metrics': dict(pos=(700, -375), title='SERVER  ·  latency p50 per node (log scale, last 30 s)',
+	'view_metrics': dict(pos=(700, -375), title='SERVER  ·  latency p50 per node (log scale, last 20 s)',
 		inputs=[('CHOP', 'in_metrics'), ('DAT', 'in_nodes')],
 		prep=[('selectCHOP', 'select_p50', 'in_metrics',
 				{'channames': 'gesture_p50_ms classify_p50_ms speech_p50_ms sentiment_p50_ms llm_p50_ms'}),
-			('trailCHOP', 'trail_p50', 'select_p50', {'wlength': 1800, 'wlengthunit': 'frames'}),
-			('choptoTOP', 'chopto_p50', None, {'chop': 'trail_p50', 'dataformat': 'r', 'format': 'rgba32float'}),
+			('trailCHOP', 'trail_p50', 'select_p50', {'wlength': 1200, 'wlengthunit': 'frames'}),  # <= 1280 px
+			('nullCHOP', 'null_trail', 'trail_p50', ALWAYS),
+			('choptoTOP', 'chopto_p50', None, {'chop': 'null_trail', 'dataformat': 'r', 'format': 'rgba32float'}),
 			('textDAT', 'fmt', None, {'file': 'td/viewers/metrics_fmt.py', 'syncfile': True, 'language': 'python'})],
 		glsl_inputs=['chopto_p50'],
 		uniforms=[],
 		texts=[dict(name='text_table', font=MONO_FONT, size=15, color=(0.88, 0.9, 0.93), align=('left', 'top'),
 				pos=(32, -52), expr="op('fmt').module.table_text(op('in_nodes'), op('in_metrics'))"),
-			dict(name='text_legend', font=UI_FONT, size=14, color=(0.55, 0.58, 0.63), align=('left', 'bottom'),
+			dict(name='text_legend', font=UI_FONT, size=12, color=(0.55, 0.58, 0.63), align=('left', 'bottom'),
 				pos=(32, 8), expr="'cyan gesture · amber classify · magenta speech · green sentiment · violet llm'")]),
 }
 
@@ -199,3 +204,35 @@ def build_all_views():
 	for name in VIEWS:
 		build_view(name)
 		wire_view(name)
+
+
+DASHBOARD_ORDER = ['view_gesture', 'view_classify', 'view_speech', 'view_sentiment', 'view_llm', 'view_metrics']
+
+
+def build_dashboard(name='dashboard', parent_path=PARENT, pos=(900, -200)):
+	"""3x2 grid of all viewers (each 640x480, scaled into 1280x640) via a tiling GLSL shader; out_dashboard."""
+	parent = op(parent_path)
+	if parent.op(name) is not None:
+		parent.op(name).destroy()
+	comp = parent.create(baseCOMP, name)
+	comp.nodeX, comp.nodeY = pos
+	common = _place(comp.create(textDAT, 'glsl_common'), GLSL_X, 2 * -ROW)
+	common.par.file, common.par.syncfile, common.par.language = 'td/glsl/common.glsl', True, 'glsl'
+	glsl = _place(comp.create(glslmultiTOP, 'glsl_tile'), GLSL_X, 0)
+	for dock in list(glsl.docked):
+		if dock.name.endswith('_compute'):
+			dock.destroy()
+	pixel = comp.op('glsl_tile_pixel')
+	pixel.par.file, pixel.par.syncfile, pixel.par.language = 'td/glsl/dashboard.frag', True, 'glsl'
+	glsl.par.outputresolution = 'custom'
+	glsl.par.resolutionw, glsl.par.resolutionh = DASH_W, DASH_H
+	for row, view in enumerate(DASHBOARD_ORDER):
+		inp = _place(comp.create(inTOP, 'in_' + view.replace('view_', '')), IN_X, row * ROW)
+		glsl.inputConnectors[row].connect(inp)
+		source = parent.op(view).outputConnectors[0]
+		source.connect(_connector(comp.inputConnectors, 'inOP', inp.name))
+	null = _place(comp.create(nullTOP, 'null_dashboard'), GLSL_X + 175, 0)
+	null.inputConnectors[0].connect(glsl)
+	out = _place(comp.create(outTOP, 'out_dashboard'), GLSL_X + 350, 0)
+	out.inputConnectors[0].connect(null)
+	return comp
