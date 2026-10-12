@@ -12,6 +12,9 @@ server never opens a device or media file and needs no ML packages inside TD.
 | `sentiment` | text | DistilBERT SST-2 | Hugging Face transformers |
 | `llm` | LLM (scene director) | `gemma3:1b` picks a visual world + an emoji per sentence | Ollama / llama.cpp (CPU) |
 
+TouchDesigner setup and per-node wiring: [../docs/quickstart.md](../docs/quickstart.md),
+[../docs/nodes/](../docs/nodes/README.md).
+
 ## Run
 
 ```bash
