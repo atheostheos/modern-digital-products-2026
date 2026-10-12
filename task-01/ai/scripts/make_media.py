@@ -115,7 +115,9 @@ def make_speech() -> None:
     lines = f" [[slnc {SPEECH_PAUSE_MS}]] ".join(line for line, _ in SPEECH_LINES)
     text = f"[[slnc {SPEECH_LEAD_MS}]] {lines} [[slnc {SPEECH_TAIL_MS}]]"
     out = MEDIA_DIR / "speech.wav"
-    subprocess.run(["say", "--file-format=WAVE", "--data-format=LEI16@16000", "-o", str(out), text], check=True)
+    subprocess.run(
+        ["say", "--file-format=WAVE", "--data-format=LEI16@16000", "-o", str(out), text], check=True
+    )
     manifest = {"sample_rate": 16000, "lines": [{"text": t, "sentiment": s} for t, s in SPEECH_LINES]}
     (MEDIA_DIR / "speech.json").write_text(json.dumps(manifest, indent=2))
     print(f"speech.wav: {len(SPEECH_LINES)} lines, {out.stat().st_size // 1024} KiB")

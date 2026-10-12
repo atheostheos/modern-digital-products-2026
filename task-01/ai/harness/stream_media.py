@@ -18,7 +18,7 @@ import struct
 import threading
 import time
 from collections import Counter, defaultdict
-from contextlib import ExitStack
+from contextlib import ExitStack, suppress
 from pathlib import Path
 
 import cv2
@@ -50,7 +50,7 @@ class State:
         self.gesture_by_t: list[tuple[float, str]] = []
         self.latest: dict[str, object] = {"gesture": "None", "image": "", "speech": "", "valence": 0.0}
         self.finals: list[str] = []
-        self.captions: list[str] = []
+        self.directions: list[str] = []
 
 
 # ---------------------------------------------------------------- video
@@ -204,9 +204,10 @@ def narrate(args, state: State, stop: threading.Event, http: httpx.Client) -> No
             scene = json.dumps(state.latest)
         reply = http.post("/api/llm", json={"text": scene}).json()
         if reply["ok"]:
+            data, ms = reply["data"], reply["timing"]["inference_ms"]
             with state.lock:
-                state.captions.append(reply["data"]["caption"])
-            print(f"  llm: {reply['data']['caption']!r}  ({reply['timing']['inference_ms']:.0f} ms) for {scene}")
+                state.directions.append(data["scene"])
+            print(f"  llm: {data['scene']} {data['emoji']}  ({ms:.0f} ms) for {scene}")
 
 
 def gesture_accuracy(state: State, manifest: dict) -> list[str]:
@@ -234,11 +235,13 @@ def summary(args, state: State) -> None:
     if args.audio == str(MEDIA_DIR / "speech.wav"):
         expected = [line["text"] for line in json.loads((MEDIA_DIR / "speech.json").read_text())["lines"]]
         print(f"  transcripts: {len(state.finals)} finals for {len(expected)} scripted lines")
-    print(f"  captions: {len(state.captions)}")
+    print(f"  llm directions: {len(state.directions)} {dict(Counter(state.directions))}")
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    parser = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     parser.add_argument("--server", default="http://127.0.0.1:8000")
     parser.add_argument("--live", action="store_true", help="webcam + microphone instead of recorded media")
     parser.add_argument(
@@ -248,7 +251,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--size", type=int, default=256)
     parser.add_argument("--classify-every", type=int, default=15, help="send every Nth frame to classify")
-    parser.add_argument("--llm-every", type=float, default=8.0, help="seconds between captions (0 = off)")
+    parser.add_argument("--llm-every", type=float, default=8.0, help="LLM request interval, s (0 = off)")
     parser.add_argument("--duration", type=float, default=40.0)
     args = parser.parse_args()
     args.video = args.video or ("camera" if args.live else str(MEDIA_DIR / "gestures.mp4"))
@@ -262,7 +265,8 @@ def main() -> None:
     ws_base = args.server.replace("http", "ws", 1)
     with ExitStack() as stack:
         frame_sockets = {
-            n: stack.enter_context(connect(f"{ws_base}/ws/{n}", max_size=None)) for n in ("gesture", "classify")
+            n: stack.enter_context(connect(f"{ws_base}/ws/{n}", max_size=None))
+            for n in ("gesture", "classify")
         }
         speech_ws = stack.enter_context(connect(f"{ws_base}/ws/speech", max_size=None))
         http = stack.enter_context(httpx.Client(base_url=args.server, timeout=30))
@@ -277,10 +281,8 @@ def main() -> None:
         threads = [threading.Thread(target=fn, args=a, daemon=True) for fn, a in jobs]
         for thread in threads:
             thread.start()
-        try:
+        with suppress(KeyboardInterrupt):
             stop.wait(args.duration)
-        except KeyboardInterrupt:
-            pass
         stop.set()
         for thread in threads:
             thread.join(timeout=5)
