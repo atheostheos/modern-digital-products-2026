@@ -17,6 +17,21 @@ view_* ◀─ results       dashboard ◀─ six view_* tiles ─▶ window_dash
 
 Per-node wiring, parameters and outputs: [nodes/README.md](nodes/README.md).
 
+## Makefile shortcuts
+
+Run `make help` in `task-01/ai` to list every target. The main ones:
+
+| Command | Does |
+|---|---|
+| `make setup llm media` | install dependencies, pull gemma3:1b, generate the recorded test media |
+| `make ollama` / `make server` | run Ollama / the ML server (two terminals; `make server NODES=sentiment,llm THREADS=2`) |
+| `make td` | open `ai.toe` |
+| `make health`, `make metrics` | check the running server |
+| `make harness`, `make harness-live` | stream recorded or live media without TD (`DURATION=40`) |
+| `make check` | lint + tests; `make test-models` runs the real-model tests |
+
+The steps below show the underlying commands.
+
 ## 1. One-time setup
 
 You need:
