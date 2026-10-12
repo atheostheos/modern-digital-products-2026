@@ -1,6 +1,6 @@
 """Builds the ml_* client COMPs in TouchDesigner from short specs (run inside TD).
 
-    exec(open(project.folder + '/td/builder/build_clients.py').read())
+    exec(open(project.folder + '/td/builder/build_clients.py', encoding='utf-8').read())
     build('ml_classify')          # or build_all()
 
 Each node: Server page (Host/Port/Active/Reconnect) + its own page, file-synced code DATs from td/ext and
