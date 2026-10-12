@@ -183,3 +183,42 @@ class TestParseAudio:
 
         with pytest.raises(ProtocolError, match="too large"):
             parse_audio(b"\x00" * (MAX_FRAME_BYTES + 1))
+
+
+class TestAudioLimits:
+    def test_rejects_frames_longer_than_the_max_duration(self):
+        import numpy as np
+
+        from tdml.protocol import MAX_AUDIO_SAMPLES, parse_audio
+        from tests.conftest import make_audio_frame
+
+        with pytest.raises(ProtocolError, match="too long"):
+            parse_audio(make_audio_frame(5, np.zeros(MAX_AUDIO_SAMPLES + 1), sample_rate=48000))
+
+    def test_rejects_out_of_range_amplitudes(self):
+        import numpy as np
+
+        from tdml.protocol import parse_audio
+        from tests.conftest import make_audio_frame
+
+        with pytest.raises(ProtocolError, match="out of range"):
+            parse_audio(make_audio_frame(5, np.array([0.0, 1e30], dtype=np.float32)))
+
+    def test_error_carries_seq_when_header_was_readable(self):
+        import numpy as np
+
+        from tdml.protocol import parse_audio
+        from tests.conftest import make_audio_frame
+
+        with pytest.raises(ProtocolError) as exc_info:
+            parse_audio(make_audio_frame(42, np.zeros(16), sample_rate=1000))
+
+        assert exc_info.value.seq == 42
+
+    def test_error_without_readable_header_has_no_seq(self):
+        from tdml.protocol import parse_audio
+
+        with pytest.raises(ProtocolError) as exc_info:
+            parse_audio(b"\x00\x01")
+
+        assert exc_info.value.seq is None

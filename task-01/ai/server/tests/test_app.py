@@ -347,10 +347,23 @@ class TestAudioNodes:
         with audio_client.websocket_connect("/ws/listener") as ws:
             for seq in (1, 7):
                 ws.send_bytes(make_audio_frame(seq=seq, samples=np.zeros(16)))
-                ws.receive_json()
+            replies = [ws.receive_json() for _ in range(3)]  # 2 events + 1 drop notice, order not guaranteed
         node = {n["node"]: n for n in audio_client.get("/metrics").json()["nodes"]}["listener"]
 
         assert (node["requests"], node["dropped"], node["processed"]) == (2, 1, 2)
+        (dropped,) = [r for r in replies if not r["ok"]]
+        assert dropped["seq"] == 7 and "dropped" in dropped["error"]
+
+    def test_protocol_error_reply_uses_seq_from_readable_header(self, audio_client):
+        import numpy as np
+
+        from tests.conftest import make_audio_frame
+
+        with audio_client.websocket_connect("/ws/listener") as ws:
+            ws.send_bytes(make_audio_frame(seq=31, samples=np.zeros(16), sample_rate=1000))
+            reply = ws.receive_json()
+
+        assert (reply["ok"], reply["seq"]) == (False, 31)
 
     def test_health_reports_audio_input_kind(self, audio_client):
         assert audio_client.get("/health").json()["nodes"]["listener"] == {"input": "audio", "loaded": True}

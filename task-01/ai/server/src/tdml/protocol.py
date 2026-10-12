@@ -21,6 +21,9 @@ AUDIO_HEADER = struct.Struct("<IdI")
 AUDIO_SAMPLE_BYTES = 4  # float32
 MIN_SAMPLE_RATE = 8000
 MAX_SAMPLE_RATE = 192000
+MAX_AUDIO_FRAME_S = 1.0  # TD sends ~0.25 s; the cap bounds per-session queue memory
+MAX_AUDIO_SAMPLES = round(MAX_SAMPLE_RATE * MAX_AUDIO_FRAME_S)
+MAX_ABS_SAMPLE = 16.0  # float PCM is nominally [-1, 1]; far outside means a broken sender
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_PIXELS = 1920 * 1920
 MAX_TEXT_CHARS = 2000
@@ -30,7 +33,14 @@ UNKNOWN_SEQ = -1
 
 
 class ProtocolError(ValueError):
-    """Client sent a message that violates the protocol; reported back, never fatal."""
+    """Client sent a message that violates the protocol; reported back, never fatal.
+
+    `seq` is set when the header could be read, so the client can match the error to its message.
+    """
+
+    def __init__(self, message: str, seq: int | None = None) -> None:
+        super().__init__(message)
+        self.seq = seq
 
 
 class Timing(BaseModel):
@@ -107,15 +117,21 @@ def parse_audio(payload: bytes) -> AudioChunk:
         raise ProtocolError(f"audio frame too large: {len(payload)} bytes (max {MAX_FRAME_BYTES})")
     if len(payload) <= AUDIO_HEADER.size:
         raise ProtocolError(f"audio frame too short: {len(payload)} bytes")
+    seq, t_send, sample_rate = AUDIO_HEADER.unpack_from(payload)
     body = len(payload) - AUDIO_HEADER.size
     if body % AUDIO_SAMPLE_BYTES:
-        raise ProtocolError(f"audio payload must be float32 samples (a multiple of 4 bytes), got {body}")
-    seq, t_send, sample_rate = AUDIO_HEADER.unpack_from(payload)
+        raise ProtocolError(f"audio payload must be float32 samples (a multiple of 4 bytes), got {body}", seq)
     if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
-        raise ProtocolError(f"sample rate {sample_rate} outside {MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE} Hz")
+        raise ProtocolError(f"sample rate {sample_rate} outside {MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE} Hz", seq)
+    if body // AUDIO_SAMPLE_BYTES > MAX_AUDIO_SAMPLES:
+        raise ProtocolError(
+            f"audio frame too long: {body // AUDIO_SAMPLE_BYTES} samples (max {MAX_AUDIO_SAMPLES})", seq
+        )
     samples = np.frombuffer(payload, dtype="<f4", offset=AUDIO_HEADER.size).astype(np.float32)
     if not np.isfinite(samples).all():
-        raise ProtocolError("audio contains non-finite samples (NaN or inf)")
+        raise ProtocolError("audio contains non-finite samples (NaN or inf)", seq)
+    if np.abs(samples).max() > MAX_ABS_SAMPLE:
+        raise ProtocolError(f"audio samples out of range (|x| > {MAX_ABS_SAMPLE})", seq)
     return AudioChunk(seq=seq, t_send=t_send, sample_rate=sample_rate, samples=samples)
 
 

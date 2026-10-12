@@ -34,6 +34,7 @@ from tdml.runtime.worker import Job, LatestWinsWorker, Result
 logger = logging.getLogger(__name__)
 
 METRICS_INTERVAL_S = 0.5
+DROP_NOTICE_INTERVAL_S = 1.0  # at most one "audio dropped" error per second per connection
 WS_POLICY_VIOLATION = 1008
 WS_INTERNAL_ERROR = 1011
 
@@ -134,8 +135,9 @@ async def _serve_audio(ws: WebSocket, outbox: Outbox, audio_node: Any, metrics: 
             metrics.record_error()
         outbox.post_threadsafe(_event_text(name, seq, t_send, data, inference_ms))
 
-    session = await run_in_threadpool(audio_node.open_session, emit)
+    session, last_drop_notice = None, float("-inf")
     try:
+        session = audio_node.open_session(emit)  # cheap (starts a thread); inside try so it is always closed
         while (message := await ws.receive())["type"] != "websocket.disconnect":
             if message.get("bytes") is None:
                 outbox.post(failure(name, UNKNOWN_SEQ, "this node expects binary audio frames").to_json())
@@ -143,13 +145,21 @@ async def _serve_audio(ws: WebSocket, outbox: Outbox, audio_node: Any, metrics: 
             try:
                 chunk = parse_audio(message["bytes"])
             except ProtocolError as exc:
-                outbox.post(failure(name, UNKNOWN_SEQ, str(exc)).to_json())
+                seq = exc.seq if exc.seq is not None else UNKNOWN_SEQ
+                outbox.post(failure(name, seq, str(exc)).to_json())
                 continue
             metrics.record_request()
-            if not session.feed(chunk):
-                metrics.record_drop()
+            if session.feed(chunk):
+                continue
+            metrics.record_drop()
+            if (now := time.monotonic()) - last_drop_notice >= DROP_NOTICE_INTERVAL_S:
+                last_drop_notice = now
+                outbox.post(
+                    failure(name, chunk.seq, "audio dropped: speech node is busy (queue full)").to_json()
+                )
     finally:
-        await run_in_threadpool(session.close)
+        if session is not None:
+            await run_in_threadpool(session.close)
 
 
 def create_app(nodes: Sequence[Any], metrics_interval_s: float = METRICS_INTERVAL_S) -> FastAPI:

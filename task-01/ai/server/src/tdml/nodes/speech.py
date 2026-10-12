@@ -29,7 +29,7 @@ DEFAULT_MODEL_SIZE = "tiny.en"
 DEFAULT_THREADS = 2
 CHUNK_S = 0.25
 CHUNK_SAMPLES = round(TARGET_RATE * CHUNK_S)
-MAX_QUEUED_CHUNKS = 240  # client chunks waiting per session; beyond that they are dropped, not buffered
+MAX_QUEUED_CHUNKS = 40  # ~10 s of 0.25 s client chunks per session; beyond that new chunks are dropped
 QUEUE_POLL_S = 0.1
 STOP_TIMEOUT_S = 5.0
 AUDIO_DECIMALS = 3
@@ -83,7 +83,7 @@ class SpeechSession:
         self._thread.start()
 
     def feed(self, chunk: AudioChunk) -> bool:
-        if self._stop.is_set():
+        if self._stop.is_set() or not self._thread.is_alive():
             return False
         try:
             self._chunks.put_nowait(chunk)
@@ -96,19 +96,35 @@ class SpeechSession:
         if self._thread.is_alive() and threading.current_thread() is not self._thread:
             self._thread.join(STOP_TIMEOUT_S)
 
+    def _reset(self) -> None:
+        self._resample = StreamResampler(TARGET_RATE)
+        self._segmenter = UtteranceSegmenter(sample_rate=TARGET_RATE)
+        self._pending = np.zeros(0, dtype=np.float32)
+
     def _loop(self) -> None:
-        resample, segmenter = StreamResampler(TARGET_RATE), UtteranceSegmenter(sample_rate=TARGET_RATE)
-        pending = np.zeros(0, dtype=np.float32)
+        self._reset()
         while not self._stop.is_set():
             try:
                 chunk = self._chunks.get(timeout=QUEUE_POLL_S)
             except queue.Empty:
                 continue
-            pending = np.concatenate([pending, resample(chunk.samples, chunk.sample_rate)])
-            while len(pending) >= CHUNK_SAMPLES and not self._stop.is_set():
-                piece, pending = pending[:CHUNK_SAMPLES], pending[CHUNK_SAMPLES:]
-                for event in segmenter.feed(piece, self._is_speech(piece)):
-                    self._handle(event, chunk)
+            try:
+                self._process(chunk)
+            except Exception as exc:  # resampler, VAD, segmenter: report, start clean, keep the session alive
+                logger.exception("speech: processing failed for seq %s", chunk.seq)
+                self._emit(
+                    chunk.seq, chunk.t_send, {"type": "error", "error": f"{type(exc).__name__}: {exc}"}, None
+                )
+                self._reset()
+
+    def _process(self, chunk: AudioChunk) -> None:
+        self._pending = np.concatenate([self._pending, self._resample(chunk.samples, chunk.sample_rate)])
+        while len(self._pending) >= CHUNK_SAMPLES and not self._stop.is_set():
+            piece, self._pending = self._pending[:CHUNK_SAMPLES], self._pending[CHUNK_SAMPLES:]
+            for event in self._segmenter.feed(piece, self._is_speech(piece)):
+                if self._stop.is_set():
+                    return
+                self._handle(event, chunk)
 
     def _handle(self, event: SegmentEvent, chunk: AudioChunk) -> None:
         if event.kind == "start":

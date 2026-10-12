@@ -169,6 +169,38 @@ def test_full_queue_drops_chunks_instead_of_blocking(recorder):
     assert False in results
 
 
+def test_failure_outside_transcription_is_reported_and_session_recovers(recorder):
+    calls = []
+
+    def flaky_vad(chunk: np.ndarray) -> bool:
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("vad exploded")
+        return bool(chunk.mean() > 0.5)
+
+    node = SpeechNode(
+        transcriber_factory=lambda: lambda samples: "after recovery", vad_factory=lambda: flaky_vad
+    )
+    node.load()
+    session = node.open_session(recorder)
+    try:
+        feed(session, audio("."))  # first chunk: VAD raises
+        feed(session, audio("SSSS..."), first_seq=2)
+        assert wait_until(lambda: recorder.finals())
+    finally:
+        session.close()
+
+    errors = [(seq, d) for seq, _, d, _ in recorder.events if d["type"] == "error"]
+    assert errors == [(1, {"type": "error", "error": "RuntimeError: vad exploded"})]
+    assert recorder.finals()[0]["text"] == "after recovery"
+
+
+def test_default_queue_holds_at_most_ten_seconds_of_chunks():
+    from tdml.nodes.speech import CHUNK_S, MAX_QUEUED_CHUNKS
+
+    assert MAX_QUEUED_CHUNKS * CHUNK_S <= 10.0
+
+
 @pytest.mark.models
 def test_real_vad_and_whisper_transcribe_a_spoken_sentence_at_48khz(tmp_path):
     import shutil
