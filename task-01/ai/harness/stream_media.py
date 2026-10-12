@@ -1,15 +1,18 @@
-"""Run the full node chain against recorded media, without TouchDesigner, camera or microphone.
+"""TouchDesigner stand-in: capture every input on the client side and stream it to the server.
 
-Video frames -> /ws/gesture (every frame) and /ws/classify (every Nth frame); /ws/speech events ->
-final transcripts -> POST /api/sentiment; every --llm-every seconds the current scene -> POST /api/llm.
-At the end it scores gestures against media/gestures.json and transcripts against media/speech.json.
+Recorded (default): media/gestures.mp4 + media/speech.wav.  Live (--live): webcam + microphone.
+Video frames -> /ws/gesture (every frame) and /ws/classify (every Nth frame); audio chunks -> /ws/speech
+(48 kHz float32, as TD's audio CHOPs deliver it); final transcripts -> POST /api/sentiment; every
+--llm-every seconds the current scene -> POST /api/llm. With recorded media, the summary scores the
+results against media/gestures.json and media/speech.json.
 
-Start the server first:  uv run --project server tdml-server --audio-file media/speech.wav
+Start the server first:  uv run --project server tdml-server
 Then:                    uv run --project server python harness/stream_media.py --duration 45
 """
 
 import argparse
 import json
+import queue
 import statistics
 import struct
 import threading
@@ -20,17 +23,23 @@ from pathlib import Path
 
 import cv2
 import httpx
+import numpy as np
 from websockets.exceptions import ConnectionClosed
 from websockets.sync.client import connect
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
+MEDIA_DIR = PROJECT_DIR / "media"
 FRAME_HEADER = struct.Struct("<Id")
+AUDIO_HEADER = struct.Struct("<IdI")
+AUDIO_RATE = 48000
+AUDIO_CHUNK_S = 0.25
+AUDIO_LOOP_GAP_S = 2.0
 RECV_TIMEOUT_S = 0.5
 JPEG_QUALITY = 85
 
 
 class State:
-    """Latest results and statistics, shared by the sender, receivers and the LLM loop."""
+    """Latest results and statistics shared by the senders, receivers and the LLM loop."""
 
     def __init__(self) -> None:
         self.lock = threading.Lock()
@@ -44,28 +53,54 @@ class State:
         self.captions: list[str] = []
 
 
-def frames(video: Path, fps: float, size: int, loop: bool):
-    """Yield (video_time_s, jpeg) at `fps`, resized so the long side is `size` pixels."""
+# ---------------------------------------------------------------- video
+def open_capture(video: str) -> tuple[cv2.VideoCapture, bool]:
+    """'camera' / 'camera:N' opens a webcam (live, no loop); anything else is a video file."""
+    if video == "camera" or video.startswith("camera:"):
+        return cv2.VideoCapture(int(video.partition(":")[2] or 0)), True
+    if not Path(video).is_file():
+        raise SystemExit(f"video file not found: {video} (run scripts/make_media.py)")
+    return cv2.VideoCapture(video), False
+
+
+def frames(video: str, fps: float, size: int):
+    """Yield (video_time_s, jpeg) at `fps`, long side resized to `size`; files loop forever."""
     while True:
-        capture = cv2.VideoCapture(str(video))
-        step = capture.get(cv2.CAP_PROP_FPS) / fps
-        index, next_pick = 0, 0.0
-        while (ok_frame := capture.read())[0]:
-            frame = ok_frame[1]
+        capture, live = open_capture(video)
+        if not capture.isOpened():
+            raise SystemExit(f"cannot open video source: {video}")
+        source_fps = capture.get(cv2.CAP_PROP_FPS) or fps
+        step, index, next_pick = (1.0 if live else source_fps / fps), 0, 0.0
+        while (grabbed := capture.read())[0]:
             if index >= next_pick:
+                frame = grabbed[1]
                 scale = size / max(frame.shape[:2])
                 small = cv2.resize(frame, None, fx=scale, fy=scale, interpolation=cv2.INTER_AREA)
                 ok, buf = cv2.imencode(".jpg", small, [cv2.IMWRITE_JPEG_QUALITY, JPEG_QUALITY])
                 if ok:
-                    yield index / capture.get(cv2.CAP_PROP_FPS), buf.tobytes()
+                    yield index / source_fps, buf.tobytes()
                 next_pick += step
             index += 1
         capture.release()
-        if not loop:
+        if live:
             return
 
 
-def receive(ws, node: str, state: State, stop: threading.Event) -> None:
+def stream_video(args, state: State, stop: threading.Event, sockets: dict) -> None:
+    for seq, (video_t, jpeg) in enumerate(frames(args.video, args.fps, args.size), start=1):
+        if stop.is_set():
+            return
+        for node, ws in sockets.items():
+            if node == "classify" and (seq - 1) % args.classify_every:
+                continue
+            with state.lock:
+                state.sent_at[(node, seq)] = time.perf_counter()
+                state.video_t[(node, seq)] = video_t
+            ws.send(FRAME_HEADER.pack(seq, time.perf_counter()) + jpeg)
+        time.sleep(1 / args.fps)
+
+
+def receive_frames(ws, node: str, state: State, stop: threading.Event) -> None:
     while not stop.is_set():
         try:
             reply = json.loads(ws.recv(timeout=RECV_TIMEOUT_S))
@@ -89,42 +124,80 @@ def receive(ws, node: str, state: State, stop: threading.Event) -> None:
                 state.latest["gesture"] = label
                 if video_t is not None:
                     state.gesture_by_t.append((video_t, label))
-            elif node == "classify":
+            else:
                 state.latest["image"] = data["label"]
 
 
-def stream_video(args, state: State, stop: threading.Event, sockets: dict) -> None:
-    seq = 0
-    for frame_no, (video_t, jpeg) in enumerate(frames(args.video, args.fps, args.size, loop=True)):
-        if stop.is_set():
+# ---------------------------------------------------------------- audio
+def audio_chunks(source: str, stop: threading.Event):
+    """Yield 0.25 s float32 chunks at 48 kHz in real time from a file (looped) or 'mic'."""
+    step = round(AUDIO_RATE * AUDIO_CHUNK_S)
+    if source == "mic":
+        import sounddevice as sd
+
+        captured: queue.Queue[np.ndarray] = queue.Queue(maxsize=64)
+        with sd.InputStream(
+            samplerate=AUDIO_RATE,
+            channels=1,
+            dtype="float32",
+            blocksize=step,
+            callback=lambda data, frames, t, status: captured.put_nowait(data[:, 0].copy()),
+        ):
+            while not stop.is_set():
+                try:
+                    yield captured.get(timeout=RECV_TIMEOUT_S)
+                except queue.Empty:
+                    continue
+        return
+    from faster_whisper import decode_audio
+
+    if not Path(source).is_file():
+        raise SystemExit(f"audio file not found: {source} (run scripts/make_media.py)")
+    samples = decode_audio(source, sampling_rate=AUDIO_RATE)
+    samples = np.concatenate([samples, np.zeros(round(AUDIO_RATE * AUDIO_LOOP_GAP_S), dtype=np.float32)])
+    next_t = time.perf_counter()
+    while not stop.is_set():
+        for start in range(0, len(samples) - step + 1, step):
+            if stop.is_set():
+                return
+            yield samples[start : start + step]
+            next_t += AUDIO_CHUNK_S
+            time.sleep(max(0.0, next_t - time.perf_counter()))
+
+
+def stream_audio(args, stop: threading.Event, ws) -> None:
+    for seq, chunk in enumerate(audio_chunks(args.audio, stop), start=1):
+        ws.send(AUDIO_HEADER.pack(seq, time.perf_counter(), AUDIO_RATE) + chunk.astype("<f4").tobytes())
+
+
+def receive_speech(ws, state: State, stop: threading.Event, http: httpx.Client) -> None:
+    while not stop.is_set():
+        try:
+            reply = json.loads(ws.recv(timeout=RECV_TIMEOUT_S))
+        except TimeoutError:
+            continue
+        except ConnectionClosed:
             return
-        seq += 1
-        for node, ws in sockets.items():
-            if node == "classify" and frame_no % args.classify_every:
-                continue
-            with state.lock:
-                state.sent_at[(node, seq)] = time.perf_counter()
-                state.video_t[(node, seq)] = video_t
-            ws.send(FRAME_HEADER.pack(seq, time.perf_counter()) + jpeg)
-        time.sleep(1 / args.fps)
+        if not reply["ok"]:
+            print(f"  speech error: {reply['error']}")
+            continue
+        event = reply["data"]
+        if event["type"] != "final" or not event["text"]:
+            continue
+        latency_ms = (time.perf_counter() - reply["t_send"]) * 1000
+        sentiment = http.post("/api/sentiment", json={"text": event["text"]}).json()["data"]
+        with state.lock:
+            state.finals.append(event["text"])
+            state.rtt_ms["speech"].append(latency_ms)
+            state.inference_ms["speech"].append(reply["timing"]["inference_ms"])
+            state.latest.update(speech=event["text"], valence=sentiment["valence"])
+        print(
+            f"  speech: {event['text']!r} -> {sentiment['label']} ({sentiment['valence']:+.2f}), "
+            f"{latency_ms:.0f} ms after the end-of-speech chunk"
+        )
 
 
-def listen_speech(args, state: State, stop: threading.Event, http: httpx.Client) -> None:
-    with connect(args.server.replace("http", "ws", 1) + "/ws/speech") as ws:
-        while not stop.is_set():
-            try:
-                event = json.loads(ws.recv(timeout=RECV_TIMEOUT_S))["data"]
-            except TimeoutError:
-                continue
-            if event["type"] != "final" or not event["text"]:
-                continue
-            sentiment = http.post("/api/sentiment", json={"text": event["text"]}).json()["data"]
-            with state.lock:
-                state.finals.append(event["text"])
-                state.latest.update(speech=event["text"], valence=sentiment["valence"])
-            print(f"  speech: {event['text']!r} -> {sentiment['label']} ({sentiment['valence']:+.2f})")
-
-
+# ---------------------------------------------------------------- llm + summary
 def narrate(args, state: State, stop: threading.Event, http: httpx.Client) -> None:
     while not stop.wait(args.llm_every):
         with state.lock:
@@ -147,20 +220,19 @@ def gesture_accuracy(state: State, manifest: dict) -> list[str]:
     return [*lines, f"    segment accuracy: {correct}/{len(manifest['segments'])}"]
 
 
-def summary(state: State) -> None:
-    print("\n=== summary ===")
+def summary(args, state: State) -> None:
+    print("\n=== summary ===  (speech round trip = end-of-speech chunk sent -> final transcript received)")
     for node in sorted(state.rtt_ms):
         rtt, inf = sorted(state.rtt_ms[node]), state.inference_ms[node]
         print(
-            f"  {node:9} replies={len(rtt):4}  inference p50={statistics.median(inf):6.1f} ms  "
-            f"round trip p50={statistics.median(rtt):6.1f} p95={rtt[int(0.95 * (len(rtt) - 1))]:6.1f} ms"
+            f"  {node:9} replies={len(rtt):4}  inference p50={statistics.median(inf):7.1f} ms  "
+            f"round trip p50={statistics.median(rtt):7.1f} p95={rtt[int(0.95 * (len(rtt) - 1))]:7.1f} ms"
         )
-    gestures_json = PROJECT_DIR / "media" / "gestures.json"
-    if gestures_json.exists() and state.gesture_by_t:
-        print("  gestures vs manifest:", *gesture_accuracy(state, json.loads(gestures_json.read_text())), sep="\n")
-    speech_json = PROJECT_DIR / "media" / "speech.json"
-    if speech_json.exists():
-        expected = [line["text"] for line in json.loads(speech_json.read_text())["lines"]]
+    if args.video == str(MEDIA_DIR / "gestures.mp4") and state.gesture_by_t:
+        manifest = json.loads((MEDIA_DIR / "gestures.json").read_text())
+        print("  gestures vs manifest:", *gesture_accuracy(state, manifest), sep="\n")
+    if args.audio == str(MEDIA_DIR / "speech.wav"):
+        expected = [line["text"] for line in json.loads((MEDIA_DIR / "speech.json").read_text())["lines"]]
         print(f"  transcripts: {len(state.finals)} finals for {len(expected)} scripted lines")
     print(f"  captions: {len(state.captions)}")
 
@@ -168,14 +240,20 @@ def summary(state: State) -> None:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--server", default="http://127.0.0.1:8000")
-    parser.add_argument("--video", type=Path, default=PROJECT_DIR / "media" / "gestures.mp4")
+    parser.add_argument("--live", action="store_true", help="webcam + microphone instead of recorded media")
+    parser.add_argument(
+        "--video", help="video file, or camera / camera:N (default: recorded clip, or camera if --live)"
+    )
+    parser.add_argument("--audio", help="audio file, or mic (default: recorded speech, or mic if --live)")
     parser.add_argument("--fps", type=float, default=15.0)
     parser.add_argument("--size", type=int, default=256)
     parser.add_argument("--classify-every", type=int, default=15, help="send every Nth frame to classify")
     parser.add_argument("--llm-every", type=float, default=8.0, help="seconds between captions (0 = off)")
     parser.add_argument("--duration", type=float, default=40.0)
-    parser.add_argument("--no-speech", action="store_true")
-    return parser.parse_args()
+    args = parser.parse_args()
+    args.video = args.video or ("camera" if args.live else str(MEDIA_DIR / "gestures.mp4"))
+    args.audio = args.audio or ("mic" if args.live else str(MEDIA_DIR / "speech.wav"))
+    return args
 
 
 def main() -> None:
@@ -183,19 +261,20 @@ def main() -> None:
     state, stop = State(), threading.Event()
     ws_base = args.server.replace("http", "ws", 1)
     with ExitStack() as stack:
-        sockets = {
-            node: stack.enter_context(connect(f"{ws_base}/ws/{node}", max_size=None))
-            for node in ("gesture", "classify")
+        frame_sockets = {
+            n: stack.enter_context(connect(f"{ws_base}/ws/{n}", max_size=None)) for n in ("gesture", "classify")
         }
+        speech_ws = stack.enter_context(connect(f"{ws_base}/ws/speech", max_size=None))
         http = stack.enter_context(httpx.Client(base_url=args.server, timeout=30))
-        threads = [
-            threading.Thread(target=receive, args=(ws, n, state, stop), daemon=True) for n, ws in sockets.items()
+        jobs = [(receive_frames, (ws, n, state, stop)) for n, ws in frame_sockets.items()]
+        jobs += [
+            (stream_video, (args, state, stop, frame_sockets)),
+            (stream_audio, (args, stop, speech_ws)),
+            (receive_speech, (speech_ws, state, stop, http)),
         ]
-        threads.append(threading.Thread(target=stream_video, args=(args, state, stop, sockets), daemon=True))
-        if not args.no_speech:
-            threads.append(threading.Thread(target=listen_speech, args=(args, state, stop, http), daemon=True))
         if args.llm_every > 0:
-            threads.append(threading.Thread(target=narrate, args=(args, state, stop, http), daemon=True))
+            jobs.append((narrate, (args, state, stop, http)))
+        threads = [threading.Thread(target=fn, args=a, daemon=True) for fn, a in jobs]
         for thread in threads:
             thread.start()
         try:
@@ -205,7 +284,7 @@ def main() -> None:
         stop.set()
         for thread in threads:
             thread.join(timeout=5)
-    summary(state)
+    summary(args, state)
 
 
 if __name__ == "__main__":
