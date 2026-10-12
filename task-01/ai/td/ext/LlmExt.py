@@ -29,8 +29,9 @@ class LlmExt(MlClientExt):
 
 	# ------------------------------------------------------------ input
 	def wiredScene(self):
+		"""Text arriving on in_scene (a COMP-level wire; In DATs do not list it in .inputs, so test the text)."""
 		dat = self.ownerComp.op('in_scene')
-		return dat.text.strip() if dat is not None and dat.inputs else ''
+		return dat.text.strip() if dat is not None else ''
 
 	def contextScene(self):
 		par = self.ownerComp.par

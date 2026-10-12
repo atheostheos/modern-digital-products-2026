@@ -25,7 +25,7 @@ def ch(opname, chan, default=0):
 
 
 VIEWS = {
-	'view_gesture': dict(pos=(525, -25), title='GESTURE  ·  MediaPipe Gesture Recognizer',
+	'view_gesture': dict(pos=(525, -25), title='GESTURE  ·  MediaPipe Gesture Recognizer', includes=['hands'],
 		inputs=[('TOP', 'in_video'), ('CHOP', 'in_landmarks'), ('CHOP', 'in_gestures'), ('DAT', 'in_hands')],
 		prep=[('fitTOP', 'fit_video', 'in_video', {'fit': 'fitbest', 'outputresolution': 'custom',
 				'resolutionw': W, 'resolutionh': H}),
@@ -67,7 +67,7 @@ VIEWS = {
 				expr="'{}   {:+.2f}'.format(op('in_label').text or '—', " + ch('in_sentiment', 'valence') + ")"),
 			dict(name='text_sentence', font=UI_FONT, size=18, color=(0.75, 0.77, 0.8), align=('left', 'top'),
 				pos=(32, -52), wordwrap=True, expr="'“{}”'.format(op('in_text').text) if op('in_text').text else ''")]),
-	'view_llm': dict(pos=(525, -375), title='SCENE DIRECTOR  ·  gemma3:1b (Ollama, CPU)',
+	'view_llm': dict(pos=(525, -375), title='SCENE DIRECTOR  ·  gemma3:1b (Ollama, CPU)', includes=['worlds'],
 		inputs=[('CHOP', 'in_llm'), ('TOP', 'in_emoji'), ('DAT', 'in_scene'), ('CHOP', 'in_sentiment'), ('DAT', 'in_quote')],
 		prep=[('selectCHOP', 'select_scene', 'in_llm', {'channames': ' '.join('scene_' + s for s in SCENES)}),
 			('lagCHOP', 'lag_scene', 'select_scene', {'lag1': 0.8, 'lag2': 0.8}),
@@ -127,10 +127,7 @@ def _set(o, params):
 
 
 def _glsl(comp, name, spec):
-	common = _place(comp.create(textDAT, 'glsl_common'), GLSL_X, 2 * -ROW)
-	common.par.file = 'td/glsl/common.glsl'
-	common.par.syncfile = True
-	common.par.language = 'glsl'
+	_include_dats(comp, ['common'] + spec.get('includes', []))
 	glsl = _place(comp.create(glslmultiTOP, 'glsl_view'), GLSL_X, 0)
 	for dock in list(glsl.docked):
 		if dock.name.endswith('_compute'):
@@ -150,6 +147,13 @@ def _glsl(comp, name, spec):
 		for axis, expr in zip('xyzw', exprs):
 			getattr(glsl.par, 'vec{}value{}'.format(i, axis)).expr = expr
 	return glsl
+
+
+def _include_dats(comp, names):
+	"""File-synced GLSL include DATs (#include <glsl_NAME>) from td/glsl/NAME.glsl."""
+	for i, name in enumerate(names):
+		dat = _place(comp.create(textDAT, 'glsl_' + name), GLSL_X + 175 * i, 2 * -ROW)
+		dat.par.file, dat.par.syncfile, dat.par.language = 'td/glsl/{}.glsl'.format(name), True, 'glsl'
 
 
 def _text(comp, prev, row, cfg):
@@ -226,8 +230,7 @@ def build_dashboard(name='dashboard', parent_path=PARENT, pos=(900, -200)):
 		parent.op(name).destroy()
 	comp = parent.create(baseCOMP, name)
 	comp.nodeX, comp.nodeY = pos
-	common = _place(comp.create(textDAT, 'glsl_common'), GLSL_X, 2 * -ROW)
-	common.par.file, common.par.syncfile, common.par.language = 'td/glsl/common.glsl', True, 'glsl'
+	_include_dats(comp, ['common'])
 	glsl = _place(comp.create(glslmultiTOP, 'glsl_tile'), GLSL_X, 0)
 	for dock in list(glsl.docked):
 		if dock.name.endswith('_compute'):
