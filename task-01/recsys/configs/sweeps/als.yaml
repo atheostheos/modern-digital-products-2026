@@ -1,0 +1,4 @@
+# Knob: latent dimension (implicit ALS, 15 iterations)
+als_r32:  {kind: als, rank: 32}
+als_r64:  {kind: als, rank: 64}
+als_r128: {kind: als, rank: 128}

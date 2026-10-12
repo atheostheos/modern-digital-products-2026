@@ -1,0 +1,4 @@
+# Knob: minimum co-review support of a rule
+rules_pair2: {kind: association_rules, min_item_count: 3, min_pair_count: 2}
+rules_pair3: {kind: association_rules, min_item_count: 5, min_pair_count: 3}
+rules_pair5: {kind: association_rules, min_item_count: 5, min_pair_count: 5}

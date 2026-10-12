@@ -1,0 +1,4 @@
+# Knob: profile window ("recently viewed" flavour: last N items vs whole history)
+content_all:   {kind: content}
+content_last1: {kind: content, profile_items: 1}
+content_last3: {kind: content, profile_items: 3}

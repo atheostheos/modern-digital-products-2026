@@ -11,6 +11,7 @@ CLAUDE.local.md
 AGENTS.md
 .mcp.json
 plans/
+notes/
 .codebase-memory/
 .ecc/
 .cursor/

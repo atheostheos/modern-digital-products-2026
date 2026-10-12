@@ -1,0 +1,5 @@
+# Knob: popularity window (recency / seasonality)
+popular_all_time: {kind: popularity}
+trending_30d:     {kind: popularity, window_days: 30}
+trending_90d:     {kind: popularity, window_days: 90}
+trending_365d:    {kind: popularity, window_days: 365}

@@ -1,0 +1,49 @@
+# Default experiment config. Relative paths are resolved against the project root.
+seed: 42
+results_dir: results  # committed, machine-generated tables and figures
+
+data:
+  hf_repo: McAuley-Lab/Amazon-Reviews-2023
+  category: Musical_Instruments
+  download_dir: data            # raw JSONL lands in data/raw/{review,meta}_categories/
+  interim_dir: data/interim     # typed parquet straight from raw
+  processed_dir: data/processed # model-ready splits + item table
+
+# Global temporal split. Reviews after test_end are dropped: monthly volume falls
+# from ~20-30k to <5k after 2023-04 (data collection tail, not real demand).
+split:
+  val_start: 2022-10-01   # val  = [val_start, test_start)  -> tuning
+  test_start: 2023-01-01  # test = [test_start, test_end)   -> final numbers
+  test_end: 2023-04-01
+
+evaluation:
+  ks: [10, 20]               # metric cutoffs
+  history_bins: [0, 1, 2, 5] # user segments by history length: 0 (cold), 1, 2-4, 5+
+
+# Compute limits, kept laptop-friendly (machine: 17 GB RAM, 10 CPUs): Spark runs on
+# `cores` cores and implicit / sklearn models use `cores` threads.
+spark:
+  driver_memory_gb: 4
+  shuffle_partitions: 8
+  cores: 4
+  local_dir: data/spark-tmp  # scratch space, gitignored
+
+# Models compared in experiments (kind -> implementation in recsys.models.registry).
+# Hyperparameters chosen on val with `make sweep` (see results/metrics/sweep_*.md).
+models:
+  # business heuristics
+  popular:            {kind: popularity}
+  trending:           {kind: popularity, window_days: 365}   # sweep: 30/90/365 days
+  category_popular:   {kind: popularity, key: category}
+  brand_popular:      {kind: popularity, key: brand}
+  also_bought:        {kind: association_rules, min_item_count: 3, min_pair_count: 2}  # sweep: 2/3/5
+  # classic approaches
+  item_knn:           {kind: item_knn, num_neighbours: 100}  # sweep: 20/100/300
+  user_knn:           {kind: user_knn, num_neighbours: 400}  # sweep: 20/100/400
+  als:                {kind: als, rank: 32}                  # sweep: 32/64/128
+  content:            {kind: content, profile_items: 1}      # sweep: all/last 1/last 3
+  # hybrid: weighted reciprocal rank fusion; trending = cold-start fallback
+  # sweep: 5 weightings within noise of each other; trending 0.2 = best warm HR + coverage
+  hybrid:
+    kind: hybrid
+    components: {also_bought: 1.0, user_knn: 1.0, als: 1.0, content: 0.5, trending: 0.2}
