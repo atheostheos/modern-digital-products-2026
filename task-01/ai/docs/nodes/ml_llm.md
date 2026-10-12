@@ -19,7 +19,7 @@ takes about 0.6 s per sentence.
 
 | Parameter | Default | Meaning |
 |---|---|---|
-| React to Speech (Auto) | on | ask whenever a new sentence appears |
+| React to Speech (Auto) | on | ask whenever a new sentence appears (after the Sentiment node has scored it, at most 1 s wait, so the fallback uses this sentence's valence) |
 | Min Interval (s) | 2 | at most one request per interval |
 | Send Now | pulse | ask now with the current context |
 | Speech Node | `ml_speech` | its `text_final` is the sentence |

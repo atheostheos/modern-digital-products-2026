@@ -4,11 +4,20 @@ Outputs: script_landmarks (21 samples, h0tx h0ty h0tz h1tx ...; y flipped to TD'
 script_gestures (hands, h0_score, h1_score and one channel per gesture = best score), table_hands.
 """
 
-from MlClientExt import MlClientExt
+from MlClientExt import MlClientExt, isNumber
 
 GESTURES = ['None', 'Closed_Fist', 'Open_Palm', 'Pointing_Up', 'Thumb_Down', 'Thumb_Up', 'Victory', 'ILoveYou']
 MAX_HANDS = 2
 NUM_LANDMARKS = 21
+
+
+def isValidHand(hand):
+	"""A hand the CHOPs can draw: 21 landmarks of 3 numbers each, a gesture name and a numeric score."""
+	if not isinstance(hand, dict) or not isNumber(hand.get('gesture_score')):
+		return False
+	points = hand.get('landmarks')
+	return (isinstance(points, list) and len(points) == NUM_LANDMARKS
+		and all(isinstance(p, list) and len(p) == 3 and all(isNumber(v) for v in p) for p in points))
 
 
 class GestureExt(MlClientExt):
@@ -23,12 +32,14 @@ class GestureExt(MlClientExt):
 			self.SendFrame(self.ownerComp.op('fit_send'))
 
 	def OnResult(self, data, reply):
-		self.Hands = data.get('hands', [])[:MAX_HANDS]
+		hands = data.get('hands')
+		hands = [hand for hand in hands if isValidHand(hand)] if isinstance(hands, list) else []
+		self.Hands = hands[:MAX_HANDS]
 		table = self.ownerComp.op('table_hands')
 		table.clear()
 		table.appendRow(['hand', 'handedness', 'handedness_score', 'gesture', 'gesture_score'])
 		for i, hand in enumerate(self.Hands):
-			table.appendRow([i, hand['handedness'], hand['handedness_score'], hand['gesture'], hand['gesture_score']])
+			table.appendRow([i] + [hand.get(key, '') for key in ('handedness', 'handedness_score', 'gesture', 'gesture_score')])
 		self.ownerComp.op('script_landmarks').cook(force=True)
 		self.ownerComp.op('script_gestures').cook(force=True)
 
@@ -48,5 +59,5 @@ class GestureExt(MlClientExt):
 			score = self.Hands[h]['gesture_score'] if h < len(self.Hands) else 0.0
 			scriptOp.appendChan('h{}_score'.format(h))[0] = score
 		for name in GESTURES:
-			best = max((hand['gesture_score'] for hand in self.Hands if hand['gesture'] == name), default=0.0)
+			best = max((hand['gesture_score'] for hand in self.Hands if hand.get('gesture') == name), default=0.0)
 			scriptOp.appendChan(name)[0] = best

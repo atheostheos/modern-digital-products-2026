@@ -12,9 +12,10 @@ import time
 
 import numpy as np
 
-from MlClientExt import MlClientExt
+from MlClientExt import MlClientExt, isNumber
 
 SCENES = ['storm', 'sunrise', 'fireworks', 'ocean', 'neon', 'starfield']
+SENTIMENT_WAIT_S = 1.0  # max wait for the sentence's own sentiment (normally ~25 ms) before asking the LLM
 
 
 class LlmExt(MlClientExt):
@@ -23,6 +24,7 @@ class LlmExt(MlClientExt):
 	def __init__(self, ownerComp):
 		self.lastSpeech = None
 		self.lastRequest = 0.0
+		self.waitingFor = None  # (sentence, since) while waiting for its sentiment
 		self.emoji = np.zeros((1, 1, 4), dtype=np.float32)
 		self.Stats = {'scene': 5.0, 'directed_frame': -1e9, 'tokens_per_s': 0.0, 'latency_ms': 0.0, 'directions': 0}
 		super().__init__(ownerComp)
@@ -36,18 +38,34 @@ class LlmExt(MlClientExt):
 	def contextScene(self):
 		par = self.ownerComp.par
 		scene = {'speech': '', 'gesture': 'None', 'valence': 0.0}
-		speech = par.Speech.eval()
-		if speech is not None:
-			scene['speech'] = speech.op('text_final').text.strip()
-		gesture = par.Gesture.eval()
-		if gesture is not None:
-			hands = gesture.op('table_hands')
-			scene['gesture'] = hands[1, 'gesture'].val if hands is not None and hands.numRows > 1 else 'None'
-		sentiment = par.Sentiment.eval()
-		if sentiment is not None:
-			chop = sentiment.op('script_sentiment')
-			scene['valence'] = round(chop['valence'][0], 3) if chop is not None and chop.numChans else 0.0
+		final = self.childOp(par.Speech.eval(), 'text_final')
+		if final is not None:
+			scene['speech'] = final.text.strip()
+		hands = self.childOp(par.Gesture.eval(), 'table_hands')
+		cell = hands[1, 'gesture'] if hands is not None and hands.numRows > 1 else None
+		if cell is not None:
+			scene['gesture'] = cell.val
+		chop = self.childOp(par.Sentiment.eval(), 'script_sentiment')
+		channel = chop['valence'] if chop is not None else None
+		if channel is not None:
+			scene['valence'] = round(channel[0], 3)
 		return scene
+
+	@staticmethod
+	def childOp(comp, name):
+		return comp.op(name) if comp is not None else None
+
+	def sentimentReady(self, speech):
+		"""True once the Sentiment node has scored this sentence (its valence drives the fallback), or after
+		SENTIMENT_WAIT_S, or when there is no Sentiment node to wait for."""
+		sentiment = self.ownerComp.par.Sentiment.eval()
+		ext = getattr(sentiment.ext, 'SentimentExt', None) if sentiment is not None else None
+		if ext is None or getattr(ext, 'ScoredText', None) == speech:
+			return True
+		now = time.perf_counter()
+		if self.waitingFor is None or self.waitingFor[0] != speech:
+			self.waitingFor = (speech, now)
+		return now - self.waitingFor[1] >= SENTIMENT_WAIT_S
 
 	def Tick(self, frame):
 		"""React to each new sentence (at most once per Interval seconds)."""
@@ -56,7 +74,7 @@ class LlmExt(MlClientExt):
 			return
 		wired = self.wiredScene()
 		speech = wired or self.contextScene()['speech']
-		if speech and speech != self.lastSpeech:
+		if speech and speech != self.lastSpeech and (wired or self.sentimentReady(speech)):
 			self.SendNow()
 
 	def SendNow(self):
@@ -70,25 +88,31 @@ class LlmExt(MlClientExt):
 
 	# ------------------------------------------------------------ output
 	def OnResult(self, data, reply):
-		scene = data.get('scene', 'starfield')
+		scene = data.get('scene') if data.get('scene') in SCENES else 'starfield'
+		tokens = data.get('tokens_per_s')
+		self.emoji = self.decodeEmoji(data.get('emoji_png'))
 		self.ownerComp.op('text_scene').text = scene
-		self.ownerComp.op('text_symbol').text = data.get('emoji', '')
+		self.ownerComp.op('text_symbol').text = str(data.get('emoji', ''))
 		self.Stats = {
-			'scene': float(SCENES.index(scene)) if scene in SCENES else 5.0,
+			'scene': float(SCENES.index(scene)),
 			'directed_frame': float(absTime.frame),
-			'tokens_per_s': data.get('tokens_per_s') or 0.0,
+			'tokens_per_s': tokens if isNumber(tokens) else 0.0,
 			'latency_ms': self.Status['rtt_ms'],
 			'directions': self.Stats['directions'] + 1,
 		}
-		self.emoji = self.decodeEmoji(data.get('emoji_png'))
 		self.ownerComp.op('script_llm').cook(force=True)
 		self.ownerComp.op('script_emoji').cook(force=True)
 
 	def decodeEmoji(self, b64png):
-		if not b64png:
+		if not isinstance(b64png, str) or not b64png:
 			return np.zeros((1, 1, 4), dtype=np.float32)
 		import cv2  # bundled with TouchDesigner
-		bgra = cv2.imdecode(np.frombuffer(base64.b64decode(b64png), dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+		try:
+			raw = np.frombuffer(base64.b64decode(b64png, validate=True), dtype=np.uint8)
+			bgra = cv2.imdecode(raw, cv2.IMREAD_UNCHANGED)
+		except (ValueError, cv2.error) as exc:  # binascii.Error is a ValueError
+			self.recordError('bad emoji picture: {}'.format(exc))
+			bgra = None
 		if bgra is None or bgra.ndim != 3 or bgra.shape[2] != 4:
 			return np.zeros((1, 1, 4), dtype=np.float32)
 		rgba = bgra[:, :, [2, 1, 0, 3]].astype(np.float32) / 255.0

@@ -17,6 +17,10 @@ RATE_WINDOW_S = 2.0
 RECONNECT_DELAY_FRAMES = 2
 
 
+def isNumber(value):
+	return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
 class MlClientExt:
 	"""Base extension: subclass per node."""
 
@@ -127,6 +131,8 @@ class MlClientExt:
 		try:
 			reply = json.loads(message)
 		except ValueError:
+			reply = None
+		if not isinstance(reply, dict):
 			self.recordError('unreadable reply from server')
 			return
 		now = time.perf_counter()
@@ -134,15 +140,24 @@ class MlClientExt:
 		self.Status['received'] += 1
 		self.replyTimes = [t for t in self.replyTimes if now - t < RATE_WINDOW_S] + [now]
 		self.Status['replies_per_s'] = round(len(self.replyTimes) / RATE_WINDOW_S, 2)
-		if reply.get('t_send') is not None:
+		if isNumber(reply.get('t_send')):
 			self.Status['rtt_ms'] = round((now - reply['t_send']) * 1000, 2)
-		if reply.get('timing'):
-			self.Status['inference_ms'] = reply['timing']['inference_ms']
-		if reply.get('ok'):
-			self.OnResult(reply.get('data') or {}, reply)
+		timing = reply.get('timing')
+		if isinstance(timing, dict) and isNumber(timing.get('inference_ms')):
+			self.Status['inference_ms'] = timing['inference_ms']
+		data = reply.get('data')
+		if reply.get('ok') and isinstance(data, dict):
+			self.applyResult(data, reply)
 		else:
-			self.recordError(reply.get('error', 'unknown error'))
+			self.recordError(reply.get('error') or 'reply without data')
 		self.refreshStatus()
+
+	def applyResult(self, data, reply):
+		"""Run the subclass handler; a reply it cannot use counts as an error instead of raising in the callback."""
+		try:
+			self.OnResult(data, reply)
+		except (KeyError, IndexError, TypeError, ValueError) as exc:
+			self.recordError('unusable {} result: {}: {}'.format(self.NODE, type(exc).__name__, exc))
 
 	def OnResult(self, data, reply):
 		"""Override in subclasses."""

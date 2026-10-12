@@ -203,7 +203,9 @@ def narrate(args, state: State, stop: threading.Event, http: httpx.Client) -> No
         with state.lock:
             scene = json.dumps(state.latest)
         reply = http.post("/api/llm", json={"text": scene}).json()
-        if reply["ok"]:
+        if not reply["ok"]:
+            print(f"  llm error: {reply['error']}")
+        else:
             data, ms = reply["data"], reply["timing"]["inference_ms"]
             with state.lock:
                 state.directions.append(data["scene"])
