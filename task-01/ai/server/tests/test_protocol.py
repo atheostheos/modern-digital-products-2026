@@ -141,3 +141,45 @@ def test_parse_text_rejects_oversized_raw_message_before_parsing():
 
     with pytest.raises(ProtocolError, match="too long"):
         parse_text("x" * (MAX_TEXT_MESSAGE_CHARS + 1))
+
+
+class TestParseAudio:
+    def test_returns_header_fields_and_float32_samples(self):
+        import numpy as np
+
+        from tdml.protocol import parse_audio
+        from tests.conftest import make_audio_frame
+
+        chunk = parse_audio(
+            make_audio_frame(seq=9, samples=np.linspace(-1, 1, 480), sample_rate=48000, t_send=4.0)
+        )
+
+        assert (chunk.seq, chunk.t_send, chunk.sample_rate) == (9, 4.0, 48000)
+        assert chunk.samples.dtype.name == "float32"
+        assert chunk.samples.shape == (480,)
+        assert chunk.samples[0] == -1.0 and chunk.samples[-1] == 1.0
+
+    @pytest.mark.parametrize(
+        ("payload_kind", "message"),
+        [("short", "too short"), ("odd", "multiple of 4"), ("rate", "sample rate"), ("nan", "non-finite")],
+    )
+    def test_rejects_invalid_audio(self, payload_kind, message):
+        import numpy as np
+
+        from tdml.protocol import AUDIO_HEADER, parse_audio
+        from tests.conftest import make_audio_frame
+
+        payloads = {
+            "short": b"\x00" * 5,
+            "odd": AUDIO_HEADER.pack(1, 0.0, 16000) + b"\x00" * 6,
+            "rate": make_audio_frame(1, np.zeros(16), sample_rate=1000),
+            "nan": make_audio_frame(1, np.array([0.0, np.nan], dtype=np.float32)),
+        }
+        with pytest.raises(ProtocolError, match=message):
+            parse_audio(payloads[payload_kind])
+
+    def test_rejects_oversized_audio(self):
+        from tdml.protocol import parse_audio
+
+        with pytest.raises(ProtocolError, match="too large"):
+            parse_audio(b"\x00" * (MAX_FRAME_BYTES + 1))

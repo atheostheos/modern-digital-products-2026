@@ -12,6 +12,7 @@ from PIL import Image
 from tdml.nodes.base import InputKind
 
 FRAME_HEADER = struct.Struct("<Id")
+AUDIO_HEADER = struct.Struct("<IdI")
 
 
 def make_jpeg(width: int = 32, height: int = 24, color: tuple[int, int, int] = (255, 0, 0)) -> bytes:
@@ -22,6 +23,10 @@ def make_jpeg(width: int = 32, height: int = 24, color: tuple[int, int, int] = (
 
 def make_frame(seq: int, t_send: float = 1.5, jpeg: bytes | None = None) -> bytes:
     return FRAME_HEADER.pack(seq, t_send) + (jpeg if jpeg is not None else make_jpeg())
+
+
+def make_audio_frame(seq: int, samples: np.ndarray, sample_rate: int = 16000, t_send: float = 2.5) -> bytes:
+    return AUDIO_HEADER.pack(seq, t_send, sample_rate) + np.asarray(samples, dtype="<f4").tobytes()
 
 
 class EchoTextNode:

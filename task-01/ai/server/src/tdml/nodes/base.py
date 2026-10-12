@@ -1,4 +1,4 @@
-"""Node contract: every analysis node (gesture, classify, speech, sentiment, llm) implements this."""
+"""Node contracts: request nodes (image/text) answer each message; audio nodes keep a session per client."""
 
 from collections.abc import Callable
 from enum import StrEnum
@@ -8,10 +8,11 @@ from typing import Any, Protocol
 class InputKind(StrEnum):
     IMAGE = "image"  # binary JPEG frames, decoded to an RGB uint8 array before infer()
     TEXT = "text"  # UTF-8 text
-    STREAM = "stream"  # no client input: the node produces events itself (e.g. microphone speech)
+    AUDIO = "audio"  # binary float32 PCM chunks streamed into a per-connection session
 
 
-Publish = Callable[[dict, float | None], None]  # (event data, inference_ms or None)
+# (seq, t_send of the chunk that produced the event, event data, inference_ms or None)
+Emit = Callable[[int, float | None, dict, float | None], None]
 
 
 class Node(Protocol):
@@ -25,15 +26,20 @@ class Node(Protocol):
         """Run one inference. Must return a JSON-serialisable dict."""
 
 
-class StreamNode(Protocol):
+class AudioSession(Protocol):
+    def feed(self, chunk: Any) -> bool:
+        """Queue one AudioChunk without blocking; False when it was dropped (queue full or closed)."""
+
+    def close(self) -> None:
+        """Stop processing and release resources. Must be idempotent."""
+
+
+class AudioNode(Protocol):
     name: str
-    input_kind: InputKind  # InputKind.STREAM
+    input_kind: InputKind  # InputKind.AUDIO
 
     def load(self) -> None:
         """Load models. Called once, off the event loop."""
 
-    def start(self, publish: Publish) -> None:
-        """Begin producing events; `publish` may be called from any thread."""
-
-    def stop(self) -> None:
-        """Stop producing events and release devices. Must be idempotent."""
+    def open_session(self, emit: Emit) -> AudioSession:
+        """Start a stateful session for one client connection; `emit` may be called from any thread."""

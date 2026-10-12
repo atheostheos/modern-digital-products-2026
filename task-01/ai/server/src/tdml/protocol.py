@@ -1,6 +1,7 @@
 """Wire protocol between TouchDesigner (or any client) and the ML server.
 
 Image nodes: binary WebSocket message = header `<Id` (seq: uint32, t_send: float64) + JPEG bytes.
+Audio nodes: binary WebSocket message = header `<IdI` (seq, t_send, sample_rate: uint32) + float32 mono PCM.
 Text nodes:  text WebSocket message = JSON {"seq": int >= 0, "t_send": float | null, "text": str}.
 Replies:     JSON envelope {ok, node, seq, t_send, data, error, timing}.
 """
@@ -16,6 +17,10 @@ from PIL import Image
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 FRAME_HEADER = struct.Struct("<Id")
+AUDIO_HEADER = struct.Struct("<IdI")
+AUDIO_SAMPLE_BYTES = 4  # float32
+MIN_SAMPLE_RATE = 8000
+MAX_SAMPLE_RATE = 192000
 MAX_FRAME_BYTES = 4 * 1024 * 1024
 MAX_IMAGE_PIXELS = 1920 * 1920
 MAX_TEXT_CHARS = 2000
@@ -87,6 +92,31 @@ class FrameRequest:
     seq: int
     t_send: float
     image: np.ndarray
+
+
+@dataclass(frozen=True)
+class AudioChunk:
+    seq: int
+    t_send: float | None
+    sample_rate: int
+    samples: np.ndarray  # float32, mono
+
+
+def parse_audio(payload: bytes) -> AudioChunk:
+    if len(payload) > MAX_FRAME_BYTES:
+        raise ProtocolError(f"audio frame too large: {len(payload)} bytes (max {MAX_FRAME_BYTES})")
+    if len(payload) <= AUDIO_HEADER.size:
+        raise ProtocolError(f"audio frame too short: {len(payload)} bytes")
+    body = len(payload) - AUDIO_HEADER.size
+    if body % AUDIO_SAMPLE_BYTES:
+        raise ProtocolError(f"audio payload must be float32 samples (a multiple of 4 bytes), got {body}")
+    seq, t_send, sample_rate = AUDIO_HEADER.unpack_from(payload)
+    if not MIN_SAMPLE_RATE <= sample_rate <= MAX_SAMPLE_RATE:
+        raise ProtocolError(f"sample rate {sample_rate} outside {MIN_SAMPLE_RATE}-{MAX_SAMPLE_RATE} Hz")
+    samples = np.frombuffer(payload, dtype="<f4", offset=AUDIO_HEADER.size).astype(np.float32)
+    if not np.isfinite(samples).all():
+        raise ProtocolError("audio contains non-finite samples (NaN or inf)")
+    return AudioChunk(seq=seq, t_send=t_send, sample_rate=sample_rate, samples=samples)
 
 
 def split_frame(payload: bytes) -> FrameHeader:

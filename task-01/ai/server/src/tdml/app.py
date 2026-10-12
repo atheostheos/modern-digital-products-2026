@@ -19,15 +19,15 @@ from tdml.protocol import (
     ProtocolError,
     Timing,
     failure,
+    parse_audio,
     parse_text,
     parse_text_body,
     split_frame,
     success,
     to_jsonable,
 )
-from tdml.runtime.broadcast import Broadcaster
 from tdml.runtime.hub import NodeHub
-from tdml.runtime.metrics import process_snapshot
+from tdml.runtime.metrics import NodeMetrics, process_snapshot
 from tdml.runtime.outbox import Outbox
 from tdml.runtime.worker import Job, LatestWinsWorker, Result
 
@@ -105,14 +105,51 @@ async def _serve_requests(
         worker.submit(Job(seq=seq, payload=payload, t_send=t_send, t_recv=t_recv, on_done=deliver))
 
 
-async def _serve_stream(ws: WebSocket, outbox: Outbox, node: str, broadcaster: Broadcaster) -> None:
-    """Stream node: the client only listens; anything it sends is answered with an error."""
-    broadcaster.subscribe(outbox)
+def _event_text(node: str, seq: int, t_send: float | None, data: dict, inference_ms: float | None) -> str:
+    """Envelope for an audio-session event; {"type": "error"} events become error envelopes."""
+    if data.get("type") == "error":
+        return failure(node, seq, str(data.get("error")), t_send=t_send).to_json()
+    timing = None
+    if inference_ms is not None:
+        now = time.perf_counter()
+        timing = Timing(t_recv=now - inference_ms / 1000, t_done=now, inference_ms=round(inference_ms, 3))
     try:
-        while (await ws.receive())["type"] != "websocket.disconnect":
-            outbox.post(failure(node, UNKNOWN_SEQ, "stream node accepts no input").to_json())
+        return Envelope(
+            ok=True, node=node, seq=seq, t_send=t_send, data=to_jsonable(data), timing=timing
+        ).to_json()
+    except (TypeError, ValueError) as exc:
+        return failure(node, seq, f"event not serialisable: {exc}", t_send=t_send).to_json()
+
+
+async def _serve_audio(ws: WebSocket, outbox: Outbox, audio_node: Any, metrics: NodeMetrics) -> None:
+    """Audio node: one session per connection; events come back on this connection."""
+    name = audio_node.name
+
+    def emit(
+        seq: int, t_send: float | None, data: dict, inference_ms: float | None
+    ) -> None:  # session thread
+        if inference_ms is not None:
+            metrics.record_inference(inference_ms)
+        if data.get("type") == "error":
+            metrics.record_error()
+        outbox.post_threadsafe(_event_text(name, seq, t_send, data, inference_ms))
+
+    session = await run_in_threadpool(audio_node.open_session, emit)
+    try:
+        while (message := await ws.receive())["type"] != "websocket.disconnect":
+            if message.get("bytes") is None:
+                outbox.post(failure(name, UNKNOWN_SEQ, "this node expects binary audio frames").to_json())
+                continue
+            try:
+                chunk = parse_audio(message["bytes"])
+            except ProtocolError as exc:
+                outbox.post(failure(name, UNKNOWN_SEQ, str(exc)).to_json())
+                continue
+            metrics.record_request()
+            if not session.feed(chunk):
+                metrics.record_drop()
     finally:
-        broadcaster.unsubscribe(outbox)
+        await run_in_threadpool(session.close)
 
 
 def create_app(nodes: Sequence[Any], metrics_interval_s: float = METRICS_INTERVAL_S) -> FastAPI:
@@ -154,8 +191,8 @@ def create_app(nodes: Sequence[Any], metrics_interval_s: float = METRICS_INTERVA
         kind = hub.kind(node)
         if kind is None:
             return _error_response(404, node, f"unknown node '{node}'")
-        if kind is InputKind.STREAM:
-            return _error_response(405, node, f"'{node}' is a stream node; subscribe at /ws/{node}")
+        if kind is InputKind.AUDIO:
+            return _error_response(405, node, f"'{node}' streams audio; use the WebSocket /ws/{node}")
         if not hub.loaded[node]:
             return _error_response(503, node, f"node '{node}' failed to load")
         t_recv = time.perf_counter()
@@ -187,8 +224,8 @@ def create_app(nodes: Sequence[Any], metrics_interval_s: float = METRICS_INTERVA
         outbox = Outbox(ws.send_text, asyncio.get_running_loop())
         sender = asyncio.create_task(outbox.run())
         try:
-            if kind is InputKind.STREAM:
-                await _serve_stream(ws, outbox, node, hub.broadcasters[node])
+            if kind is InputKind.AUDIO:
+                await _serve_audio(ws, outbox, hub.registry[node], hub.audio_metrics[node])
             else:
                 await _serve_requests(ws, outbox, node, kind, hub.workers[node])
         finally:

@@ -1,4 +1,4 @@
-"""Owns the nodes: validation, loading, start/stop, health and metrics for request and stream nodes."""
+"""Owns the nodes: validation, loading, worker start/stop, health and metrics."""
 
 import logging
 from collections.abc import Sequence
@@ -8,7 +8,6 @@ from fastapi.concurrency import run_in_threadpool
 
 from tdml.nodes.base import InputKind
 from tdml.protocol import decode_image
-from tdml.runtime.broadcast import Broadcaster
 from tdml.runtime.metrics import NodeMetrics
 from tdml.runtime.worker import LatestWinsWorker
 
@@ -33,12 +32,13 @@ class NodeHub:
         self.workers = {
             name: _make_worker(node)
             for name, node in self.registry.items()
-            if node.input_kind is not InputKind.STREAM
+            if node.input_kind is not InputKind.AUDIO
         }
-        self.broadcasters = {
-            name: Broadcaster(name, NodeMetrics(name))
+        # Audio nodes run one session per connection; the hub only owns their metrics.
+        self.audio_metrics = {
+            name: NodeMetrics(name)
             for name, node in self.registry.items()
-            if node.input_kind is InputKind.STREAM
+            if node.input_kind is InputKind.AUDIO
         }
         self.loaded: dict[str, bool] = dict.fromkeys(self.registry, False)
 
@@ -51,13 +51,8 @@ class NodeHub:
             await self._load(node)
         for worker in self.workers.values():
             worker.start()
-        for name, broadcaster in self.broadcasters.items():
-            if self.loaded[name]:
-                await self._start_stream(self.registry[name], broadcaster)
 
     async def shutdown(self) -> None:
-        for name in self.broadcasters:
-            await run_in_threadpool(self.registry[name].stop)
         for worker in self.workers.values():
             await run_in_threadpool(worker.stop)  # joins the thread; keeps the event loop free
 
@@ -69,19 +64,8 @@ class NodeHub:
         except Exception:
             logger.exception("node %s failed to load; it will answer with errors", node.name)
 
-    async def _start_stream(self, node: Any, broadcaster: Broadcaster) -> None:
-        try:
-            await run_in_threadpool(node.start, broadcaster.publish)
-            logger.info("stream node %s started", node.name)
-        except Exception:
-            self.loaded[node.name] = False
-            logger.exception("stream node %s failed to start (device or permission?)", node.name)
-
     def metrics(self) -> list[dict]:
-        sources = {
-            **{n: w.metrics for n, w in self.workers.items()},
-            **{n: b.metrics for n, b in self.broadcasters.items()},
-        }
+        sources = {**{n: w.metrics for n, w in self.workers.items()}, **self.audio_metrics}
         return [sources[name].snapshot() for name in self.registry]
 
     def health(self) -> dict:

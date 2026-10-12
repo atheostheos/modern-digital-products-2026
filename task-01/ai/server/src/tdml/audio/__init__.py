@@ -1,1 +1,1 @@
-"""Audio capture and utterance segmentation for the speech node."""
+"""Audio helpers for the speech node: resampling and utterance segmentation."""

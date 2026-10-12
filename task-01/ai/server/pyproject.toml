@@ -16,7 +16,6 @@ dependencies = [
     "ollama>=0.6",
     "psutil>=7",
     "pydantic>=2",
-    "sounddevice>=0.5",
     "torch>=2.14",
     "torchvision>=0.29",
     "transformers>=5.19",
@@ -34,6 +33,7 @@ dev = [
     "pytest>=9.1.1",
     "pytest-cov>=7.1.0",
     "ruff>=0.17.0",
+    "sounddevice>=0.5",
 ]
 
 [project.scripts]

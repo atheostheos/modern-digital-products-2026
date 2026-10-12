@@ -1230,7 +1230,6 @@ dependencies = [
     { name = "ollama" },
     { name = "psutil" },
     { name = "pydantic" },
-    { name = "sounddevice" },
     { name = "torch" },
     { name = "torchvision" },
     { name = "transformers" },
@@ -1244,6 +1243,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "sounddevice" },
 ]
 
 [package.metadata]
@@ -1256,7 +1256,6 @@ requires-dist = [
     { name = "ollama", specifier = ">=0.6" },
     { name = "psutil", specifier = ">=7" },
     { name = "pydantic", specifier = ">=2" },
-    { name = "sounddevice", specifier = ">=0.5" },
     { name = "torch", specifier = ">=2.14" },
     { name = "torchvision", specifier = ">=0.29" },
     { name = "transformers", specifier = ">=5.19" },
@@ -1270,6 +1269,7 @@ dev = [
     { name = "pytest", specifier = ">=9.1.1" },
     { name = "pytest-cov", specifier = ">=7.1.0" },
     { name = "ruff", specifier = ">=0.17.0" },
+    { name = "sounddevice", specifier = ">=0.5" },
 ]
 
 [[package]]

@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 
 from tdml.app import create_app
 from tdml.nodes.base import InputKind
-from tests.conftest import make_frame, make_jpeg
+from tests.conftest import make_frame, make_jpeg, wait_until
 
 
 @pytest.fixture
@@ -250,60 +250,110 @@ class TestRobustness:
             create_app([MetricsNamed()])
 
 
-class TickingStreamNode:
-    """Stream node that publishes an event every 20 ms while started."""
+class FakeAudioSession:
+    def __init__(self, emit) -> None:
+        self.emit = emit
+        self.closed = False
 
-    name = "ticker"
-    input_kind = InputKind.STREAM
+    def feed(self, chunk) -> bool:
+        if chunk.seq == 99:
+            self.emit(chunk.seq, chunk.t_send, {"type": "error", "error": "boom"}, None)
+        else:
+            self.emit(
+                chunk.seq,
+                chunk.t_send,
+                {"type": "echo", "n": len(chunk.samples), "rate": chunk.sample_rate},
+                2.0,
+            )
+        return chunk.seq != 7  # seq 7 simulates a full queue
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class FakeAudioNode:
+    name = "listener"
+    input_kind = InputKind.AUDIO
 
     def __init__(self) -> None:
-        self._stop = None
+        self.sessions: list[FakeAudioSession] = []
 
     def load(self) -> None:
         return None
 
-    def start(self, publish) -> None:
-        import threading
-
-        self._stop = threading.Event()
-
-        def loop() -> None:
-            count = 0
-            while not self._stop.wait(0.02):
-                count += 1
-                publish({"type": "tick", "count": count}, 1.5)
-
-        threading.Thread(target=loop, daemon=True).start()
-
-    def stop(self) -> None:
-        if self._stop is not None:
-            self._stop.set()
+    def open_session(self, emit) -> FakeAudioSession:
+        session = FakeAudioSession(emit)
+        self.sessions.append(session)
+        return session
 
 
-class TestStreamNodes:
+class TestAudioNodes:
     @pytest.fixture
-    def stream_client(self):
-        with TestClient(create_app([TickingStreamNode(), NumpyNode()])) as test_client:
+    def audio_node(self) -> FakeAudioNode:
+        return FakeAudioNode()
+
+    @pytest.fixture
+    def audio_client(self, audio_node):
+        with TestClient(create_app([audio_node, NumpyNode()])) as test_client:
             yield test_client
 
-    def test_websocket_subscriber_receives_published_events(self, stream_client):
-        with stream_client.websocket_connect("/ws/ticker") as ws:
-            event = ws.receive_json()
+    def test_audio_frame_events_come_back_on_the_same_connection(self, audio_client):
+        import numpy as np
 
-        assert event["ok"] is True
-        assert event["node"] == "ticker"
-        assert event["data"]["type"] == "tick"
-        assert event["timing"]["inference_ms"] == 1.5
+        from tests.conftest import make_audio_frame
 
-    def test_health_reports_stream_input_kind(self, stream_client):
-        assert stream_client.get("/health").json()["nodes"]["ticker"] == {"input": "stream", "loaded": True}
+        with audio_client.websocket_connect("/ws/listener") as ws:
+            ws.send_bytes(make_audio_frame(seq=3, samples=np.zeros(480), sample_rate=48000, t_send=1.25))
+            reply = ws.receive_json()
 
-    def test_stream_node_appears_in_metrics(self, stream_client):
-        with stream_client.websocket_connect("/ws/ticker") as ws:
-            ws.receive_json()
-        nodes = {n["node"]: n for n in stream_client.get("/metrics").json()["nodes"]}
+        assert reply["ok"] is True
+        assert (reply["seq"], reply["t_send"]) == (3, 1.25)
+        assert reply["data"] == {"type": "echo", "n": 480, "rate": 48000}
+        assert reply["timing"]["inference_ms"] == 2.0
 
-        assert nodes["ticker"]["processed"] >= 1
+    def test_error_event_becomes_error_envelope(self, audio_client):
+        import numpy as np
 
-    def test_rest_on_stream_node_is_405(self, stream_client):
-        assert stream_client.post("/api/ticker", json={"text": "x"}).status_code == 405
+        from tests.conftest import make_audio_frame
+
+        with audio_client.websocket_connect("/ws/listener") as ws:
+            ws.send_bytes(make_audio_frame(seq=99, samples=np.zeros(16)))
+            reply = ws.receive_json()
+
+        assert reply["ok"] is False
+        assert (reply["seq"], reply["error"]) == (99, "boom")
+
+    def test_invalid_audio_and_text_messages_get_error_replies(self, audio_client):
+        with audio_client.websocket_connect("/ws/listener") as ws:
+            ws.send_bytes(b"\x00\x01")
+            bad_frame = ws.receive_json()
+            ws.send_text("hello")
+            text = ws.receive_json()
+
+        assert bad_frame["ok"] is False and "too short" in bad_frame["error"]
+        assert text["ok"] is False and "expects binary audio" in text["error"]
+
+    def test_session_is_closed_when_client_disconnects(self, audio_client, audio_node):
+        with audio_client.websocket_connect("/ws/listener"):
+            pass
+
+        assert wait_until(lambda: audio_node.sessions and audio_node.sessions[0].closed)
+
+    def test_metrics_count_requests_drops_and_inferences(self, audio_client):
+        import numpy as np
+
+        from tests.conftest import make_audio_frame
+
+        with audio_client.websocket_connect("/ws/listener") as ws:
+            for seq in (1, 7):
+                ws.send_bytes(make_audio_frame(seq=seq, samples=np.zeros(16)))
+                ws.receive_json()
+        node = {n["node"]: n for n in audio_client.get("/metrics").json()["nodes"]}["listener"]
+
+        assert (node["requests"], node["dropped"], node["processed"]) == (2, 1, 2)
+
+    def test_health_reports_audio_input_kind(self, audio_client):
+        assert audio_client.get("/health").json()["nodes"]["listener"] == {"input": "audio", "loaded": True}
+
+    def test_rest_on_audio_node_is_405(self, audio_client):
+        assert audio_client.post("/api/listener", content=b"x").status_code == 405

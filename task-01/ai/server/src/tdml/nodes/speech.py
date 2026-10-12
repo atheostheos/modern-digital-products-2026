@@ -1,7 +1,11 @@
-"""Speech-to-text stream node: microphone → Silero VAD → utterance segmenter → faster-whisper tiny.en.
+"""Speech-to-text node: audio chunks streamed by the client -> 16 kHz -> Silero VAD -> utterance
+segmenter -> faster-whisper tiny.en. The server never opens a microphone: TouchDesigner (or the harness)
+captures live or recorded audio and sends it.
 
-Unlike request nodes, it produces events on its own and publishes them to subscribers:
-{"type": "start"}, {"type": "partial" | "final", "text", "audio_s"}, {"type": "error", "error"}.
+Each connection gets its own SpeechSession (resampler, re-chunker, segmenter, worker thread); the whisper
+model is shared behind a lock. Events go back to that connection, tagged with the seq/t_send of the chunk
+that completed them: {"type": "start"}, {"type": "partial" | "final", "text", "audio_s"},
+{"type": "error", "error"}.
 """
 
 import logging
@@ -10,20 +14,22 @@ import threading
 import time
 from collections.abc import Callable
 from functools import partial
-from typing import Any
 
 import numpy as np
 
+from tdml.audio.resample import TARGET_RATE, StreamResampler
 from tdml.audio.segmenter import SegmentEvent, UtteranceSegmenter
-from tdml.audio.source import SAMPLE_RATE, SoundDeviceSource
 from tdml.config import models_dir
-from tdml.nodes.base import InputKind, Publish
+from tdml.nodes.base import Emit, InputKind
+from tdml.protocol import AudioChunk
 
 logger = logging.getLogger(__name__)
 
 DEFAULT_MODEL_SIZE = "tiny.en"
 DEFAULT_THREADS = 2
-MAX_QUEUED_CHUNKS = 240  # 60 s of 0.25 s chunks; beyond that audio is dropped, not buffered forever
+CHUNK_S = 0.25
+CHUNK_SAMPLES = round(TARGET_RATE * CHUNK_S)
+MAX_QUEUED_CHUNKS = 240  # client chunks waiting per session; beyond that they are dropped, not buffered
 QUEUE_POLL_S = 0.1
 STOP_TIMEOUT_S = 5.0
 AUDIO_DECIMALS = 3
@@ -66,86 +72,95 @@ def _silero_vad() -> IsSpeech:
     return lambda chunk: bool(get_speech_timestamps(chunk, options))
 
 
-class SpeechNode:
-    name = "speech"
-    input_kind = InputKind.STREAM
-
-    def __init__(
-        self,
-        model_size: str = DEFAULT_MODEL_SIZE,
-        device: int | str | None = None,
-        threads: int = DEFAULT_THREADS,
-        transcriber_factory: Callable[[], Transcribe] | None = None,
-        vad_factory: Callable[[], IsSpeech] | None = None,
-        source_factory: Callable[[Callable[[np.ndarray], None]], Any] | None = None,
-    ) -> None:
-        self._transcriber_factory = transcriber_factory or partial(_whisper_transcriber, model_size, threads)
-        self._vad_factory = vad_factory or _silero_vad
-        self._source_factory = source_factory or partial(_source, device)
-        self._transcribe: Transcribe | None = None
-        self._is_speech: IsSpeech | None = None
-        self._source: Any = None
-        self._thread: threading.Thread | None = None
+class SpeechSession:
+    def __init__(self, transcribe: Transcribe, is_speech: IsSpeech, emit: Emit, max_queued: int) -> None:
+        self._transcribe = transcribe
+        self._is_speech = is_speech
+        self._emit = emit
+        self._chunks: queue.Queue[AudioChunk] = queue.Queue(maxsize=max_queued)
         self._stop = threading.Event()
-        self._chunks: queue.Queue[np.ndarray] = queue.Queue(maxsize=MAX_QUEUED_CHUNKS)
-        self.dropped_chunks = 0
-
-    def load(self) -> None:
-        self._transcribe = self._transcriber_factory()
-        self._is_speech = self._vad_factory()
-
-    def start(self, publish: Publish) -> None:
-        if self._transcribe is None or self._is_speech is None:
-            raise RuntimeError("speech model not loaded")
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, args=(publish,), name="speech", daemon=True)
+        self._thread = threading.Thread(target=self._loop, name="speech-session", daemon=True)
         self._thread.start()
-        self._source = self._source_factory(self._on_chunk)
-        self._source.start()
 
-    def stop(self) -> None:
-        if self._source is not None:
-            self._source.stop()
-            self._source = None
-        self._stop.set()
-        if self._thread is not None:
-            self._thread.join(STOP_TIMEOUT_S)
-            self._thread = None
-
-    def _on_chunk(self, chunk: np.ndarray) -> None:  # audio thread: never block
+    def feed(self, chunk: AudioChunk) -> bool:
+        if self._stop.is_set():
+            return False
         try:
             self._chunks.put_nowait(chunk)
+            return True
         except queue.Full:
-            self.dropped_chunks += 1
+            return False
 
-    def _loop(self, publish: Publish) -> None:
-        segmenter = UtteranceSegmenter(sample_rate=SAMPLE_RATE)
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread.is_alive() and threading.current_thread() is not self._thread:
+            self._thread.join(STOP_TIMEOUT_S)
+
+    def _loop(self) -> None:
+        resample, segmenter = StreamResampler(TARGET_RATE), UtteranceSegmenter(sample_rate=TARGET_RATE)
+        pending = np.zeros(0, dtype=np.float32)
         while not self._stop.is_set():
             try:
                 chunk = self._chunks.get(timeout=QUEUE_POLL_S)
             except queue.Empty:
                 continue
-            for event in segmenter.feed(chunk, self._is_speech(chunk)):
-                self._handle(event, publish)
+            pending = np.concatenate([pending, resample(chunk.samples, chunk.sample_rate)])
+            while len(pending) >= CHUNK_SAMPLES and not self._stop.is_set():
+                piece, pending = pending[:CHUNK_SAMPLES], pending[CHUNK_SAMPLES:]
+                for event in segmenter.feed(piece, self._is_speech(piece)):
+                    self._handle(event, chunk)
 
-    def _handle(self, event: SegmentEvent, publish: Publish) -> None:
+    def _handle(self, event: SegmentEvent, chunk: AudioChunk) -> None:
         if event.kind == "start":
-            publish({"type": "start"}, None)
+            self._emit(chunk.seq, chunk.t_send, {"type": "start"}, None)
             return
         if event.audio is None:  # blip too short to transcribe
-            publish({"type": event.kind, "text": "", "audio_s": 0.0}, None)
+            self._emit(chunk.seq, chunk.t_send, {"type": event.kind, "text": "", "audio_s": 0.0}, None)
             return
         t0 = time.perf_counter()
         try:
             text = self._transcribe(event.audio)
         except Exception as exc:
             logger.exception("speech: transcription failed")
-            publish({"type": "error", "error": f"{type(exc).__name__}: {exc}"}, None)
+            self._emit(
+                chunk.seq, chunk.t_send, {"type": "error", "error": f"{type(exc).__name__}: {exc}"}, None
+            )
             return
         inference_ms = (time.perf_counter() - t0) * 1000
-        audio_s = round(len(event.audio) / SAMPLE_RATE, AUDIO_DECIMALS)
-        publish({"type": event.kind, "text": text, "audio_s": audio_s}, inference_ms)
+        audio_s = round(len(event.audio) / TARGET_RATE, AUDIO_DECIMALS)
+        self._emit(
+            chunk.seq, chunk.t_send, {"type": event.kind, "text": text, "audio_s": audio_s}, inference_ms
+        )
 
 
-def _source(device: int | str | None, on_chunk: Callable[[np.ndarray], None]) -> SoundDeviceSource:
-    return SoundDeviceSource(on_chunk, device=device)
+class SpeechNode:
+    name = "speech"
+    input_kind = InputKind.AUDIO
+
+    def __init__(
+        self,
+        model_size: str = DEFAULT_MODEL_SIZE,
+        threads: int = DEFAULT_THREADS,
+        transcriber_factory: Callable[[], Transcribe] | None = None,
+        vad_factory: Callable[[], IsSpeech] | None = None,
+        max_queued_chunks: int = MAX_QUEUED_CHUNKS,
+    ) -> None:
+        self._transcriber_factory = transcriber_factory or partial(_whisper_transcriber, model_size, threads)
+        self._vad_factory = vad_factory or _silero_vad
+        self._max_queued = max_queued_chunks
+        self._transcribe: Transcribe | None = None
+        self._is_speech: IsSpeech | None = None
+        self._model_lock = threading.Lock()  # sessions share one whisper model
+
+    def load(self) -> None:
+        self._transcribe = self._transcriber_factory()
+        self._is_speech = self._vad_factory()
+
+    def _locked_transcribe(self, audio: np.ndarray) -> str:
+        with self._model_lock:
+            return self._transcribe(audio)
+
+    def open_session(self, emit: Emit) -> SpeechSession:
+        if self._transcribe is None or self._is_speech is None:
+            raise RuntimeError("speech model not loaded")
+        return SpeechSession(self._locked_transcribe, self._is_speech, emit, self._max_queued)

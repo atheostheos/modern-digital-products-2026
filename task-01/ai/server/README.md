@@ -1,7 +1,8 @@
 # tdml — local ML server for TouchDesigner nodes
 
-Runs five small pretrained models behind one localhost server so TouchDesigner (or any client)
-can stream frames, text and audio events without installing ML packages inside TD.
+Runs five small pretrained models behind one localhost server. TouchDesigner (or any client) captures
+every input — camera or recorded video, microphone or recorded audio, text — and streams it here; the
+server never opens a device or media file and needs no ML packages inside TD.
 
 | Node | Content | Model | Framework |
 |---|---|---|---|
@@ -25,10 +26,20 @@ Model weights are cached in `../models/` (git-ignored).
 
 - `GET /health`, `GET /metrics`, WebSocket `/ws/metrics` (pushed every 0.5 s)
 - WebSocket `/ws/{node}`: image nodes take binary `<Id` header (seq, t_send) + JPEG; text nodes take
-  `{"seq", "t_send", "text"}`; `speech` pushes `start` / `partial` / `final` events
+  `{"seq", "t_send", "text"}`; `speech` takes binary `<IdI` header (seq, t_send, sample_rate) + float32
+  mono PCM (any rate, resampled to 16 kHz) and answers on the same socket with `start` / `partial` /
+  `final` events
 - REST `POST /api/{node}`: JSON `{"text": ...}` or a raw `image/jpeg` body
 
 Replies are envelopes: `{ok, node, seq, t_send, data, error, timing}`.
+
+## Try it without TouchDesigner
+
+```bash
+uv run python ../scripts/make_media.py          # recorded test media into ../media (git-ignored)
+uv run python ../harness/stream_media.py        # streams recorded video + audio like TD would
+uv run python ../harness/stream_media.py --live # webcam + microphone instead
+```
 
 ## Test
 
