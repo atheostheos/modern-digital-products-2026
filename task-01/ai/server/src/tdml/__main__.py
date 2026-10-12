@@ -3,11 +3,13 @@
 import argparse
 import logging
 import os
+from functools import partial
 from pathlib import Path
 
 import uvicorn
 
 from tdml.app import create_app
+from tdml.audio.file_source import FileAudioSource
 from tdml.config import models_dir
 from tdml.nodes.classify import ClassifyNode
 from tdml.nodes.gesture import GestureNode
@@ -47,6 +49,13 @@ def _bounded_int(low: int, high: int):
     return parse
 
 
+def _existing_file(value: str) -> Path:
+    path = Path(value).expanduser()
+    if not path.is_file():
+        raise argparse.ArgumentTypeError(f"file not found: {path}")
+    return path
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(prog="tdml-server", description=__doc__)
     parser.add_argument("--host", default=DEFAULT_HOST, help="bind address (keep loopback unless needed)")
@@ -55,6 +64,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--threads", type=_bounded_int(1, MAX_THREADS), default=DEFAULT_THREADS)
     parser.add_argument(
         "--mic-device", default=None, help="sounddevice input name or index (default: system)"
+    )
+    parser.add_argument(
+        "--audio-file", type=_existing_file, default=None, help="feed speech from a file instead of the mic"
+    )
+    parser.add_argument(
+        "--audio-loop", action=argparse.BooleanOptionalAction, default=True, help="repeat --audio-file"
     )
     parser.add_argument("--whisper-model", default=DEFAULT_MODEL_SIZE, help="e.g. tiny.en, base.en")
     parser.add_argument("--llm-model", default=DEFAULT_LLM_MODEL)
@@ -67,12 +82,26 @@ def _mic_device(value: str | None) -> int | str | None:
     return int(value) if value is not None and value.isdigit() else value
 
 
+def _file_source_factory(args: argparse.Namespace):
+    """Recorded audio instead of the microphone when --audio-file is given (None = live mic)."""
+    if args.audio_file is None:
+        return None
+    return partial(_make_file_source, path=args.audio_file, loop=args.audio_loop)
+
+
+def _make_file_source(on_chunk, path: Path, loop: bool) -> FileAudioSource:
+    return FileAudioSource(on_chunk, path=path, loop=loop)
+
+
 def build_nodes(args: argparse.Namespace) -> list:
     factories = {
         "gesture": lambda: GestureNode(),
         "classify": lambda: ClassifyNode(),
         "speech": lambda: SpeechNode(
-            model_size=args.whisper_model, device=_mic_device(args.mic_device), threads=args.threads
+            model_size=args.whisper_model,
+            device=_mic_device(args.mic_device),
+            threads=args.threads,
+            source_factory=_file_source_factory(args),
         ),
         "sentiment": lambda: SentimentNode(),
         "llm": lambda: LlmNode(model=args.llm_model, host=args.ollama_host),

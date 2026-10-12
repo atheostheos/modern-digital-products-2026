@@ -60,3 +60,22 @@ def test_main_runs_uvicorn_with_frame_sized_websocket_limit(monkeypatch):
     assert calls["port"] == 8123
     assert calls["ws_max_size"] == MAX_FRAME_BYTES
     assert [route.path for route in calls["app"].routes if route.path == "/health"] == ["/health"]
+
+
+def test_audio_file_option_feeds_speech_from_file(tmp_path):
+    from tdml.audio.file_source import FileAudioSource
+
+    clip = tmp_path / "speech.wav"
+    clip.write_bytes(b"")
+    args = cli.parse_args(["--nodes", "speech", "--audio-file", str(clip)])
+
+    (node,) = cli.build_nodes(args)
+    source = node._source_factory(lambda chunk: None)
+
+    assert isinstance(source, FileAudioSource)
+    assert args.audio_loop is True
+
+
+def test_audio_file_must_exist():
+    with pytest.raises(SystemExit):
+        cli.parse_args(["--audio-file", "/definitely/not/here.wav"])

@@ -9,3 +9,6 @@ CrashAutoSave*
 # Downloaded model weights and eval datasets (anchored)
 /models/
 /data/
+
+# Generated test media (scripts/make_media.py)
+/media/
