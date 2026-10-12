@@ -165,6 +165,12 @@ class MlClientExt:
 		if filler is not None:
 			filler(scriptOp)
 
+	def FillTop(self, scriptOp):
+		"""Script TOP callback entry point: dispatch on the TOP's name (copyNumpyArray only works in onCook)."""
+		filler = getattr(self, 'filltop_' + scriptOp.name.replace('script_', ''), None)
+		if filler is not None:
+			filler(scriptOp)
+
 	def fill_status(self, scriptOp):
 		scriptOp.numSamples = 1
 		for name, value in self.Status.items():

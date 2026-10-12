@@ -1,109 +1,115 @@
+import base64
+import json
 from types import SimpleNamespace as NS
 
 import pytest
 
 from tdml.nodes.base import InputKind
-from tdml.nodes.llm import DEFAULT_MODEL, MAX_CAPTION_WORDS, LlmNode
+from tdml.nodes.llm import DEFAULT_MODEL, SCENES, LlmNode
 
 NS_PER_S = 1_000_000_000
 
 
 class FakeClient:
-    def __init__(self, reply: str = "Rain falls, a muted, gray surrender.") -> None:
-        self.reply = reply
+    """Answers the scene prompt and the emoji prompt with canned replies."""
+
+    def __init__(self, scene_reply: str = "Storm.", emoji_reply: str = "🌧️") -> None:
+        self.scene_reply, self.emoji_reply = scene_reply, emoji_reply
         self.calls: list[dict] = []
 
     def chat(self, **kwargs) -> NS:
         self.calls.append(kwargs)
+        system = kwargs["messages"][0]["content"]
+        reply = self.emoji_reply if "emoji" in system.lower() else self.scene_reply
         return NS(
-            message=NS(content=self.reply),
-            eval_count=10,
-            eval_duration=NS_PER_S // 5,  # 0.2 s -> 50 tok/s
-            prompt_eval_duration=NS_PER_S // 20,  # 50 ms
+            message=NS(content=reply), eval_count=4, eval_duration=NS_PER_S // 50, prompt_eval_duration=0
         )
 
 
-def make_node(reply: str = "Rain falls, a muted, gray surrender.") -> tuple[LlmNode, FakeClient]:
-    client = FakeClient(reply)
-    node = LlmNode(client_factory=lambda host: client)
+def fake_renderer(emoji: str) -> bytes:
+    return ("PNG:" + emoji).encode()
+
+
+def make_node(scene_reply="Storm.", emoji_reply="🌧️", renderer=fake_renderer) -> tuple[LlmNode, FakeClient]:
+    client = FakeClient(scene_reply, emoji_reply)
+    node = LlmNode(client_factory=lambda host: client, emoji_renderer=renderer)
     node.load()
     return node, client
+
+
+def scene_json(speech: str, valence: float = 0.0, gesture: str = "None") -> str:
+    return json.dumps({"speech": speech, "gesture": gesture, "valence": valence})
 
 
 def test_node_contract():
     assert LlmNode.name == "llm"
     assert LlmNode.input_kind is InputKind.TEXT
+    assert SCENES == ("storm", "sunrise", "fireworks", "ocean", "neon", "starfield")
 
 
 def test_load_warms_up_model_on_cpu():
     _, client = make_node()
 
-    warmup = client.calls[0]
-    assert warmup["model"] == DEFAULT_MODEL
-    assert warmup["options"]["num_gpu"] == 0
+    assert client.calls[0]["model"] == DEFAULT_MODEL
+    assert client.calls[0]["options"]["num_gpu"] == 0
 
 
-def test_infer_returns_caption_and_speed_metrics():
+def test_infer_picks_scene_and_emoji_from_the_sentence():
     node, client = make_node()
 
-    result = node.infer('{"gesture": "Thumb_Down", "speech": "this rain is awful"}')
+    result = node.infer(scene_json("The rain outside is awful and my train was late again.", valence=-0.9))
 
-    assert result == {
-        "caption": "Rain falls, a muted, gray surrender.",
-        "tokens": 10,
-        "tokens_per_s": 50.0,
-        "prompt_ms": 50.0,
-    }
-    request = client.calls[-1]
-    assert request["messages"][0]["role"] == "system"
-    assert "Thumb_Down" in request["messages"][1]["content"]
-    assert request["options"]["num_gpu"] == 0
+    assert result["scene"] == "storm"
+    assert result["scene_index"] == 0
+    assert result["emoji"] == "🌧️"
+    assert base64.b64decode(result["emoji_png"]) == "PNG:🌧️".encode()
+    assert result["fallback"] == []
+    assert result["tokens_per_s"] == 200.0
+    asked = [call["messages"][1]["content"] for call in client.calls[1:]]
+    assert asked == ["The rain outside is awful and my train was late again."] * 2
+    assert all(call["options"]["num_gpu"] == 0 for call in client.calls)
+
+
+def test_plain_sentence_input_is_accepted():
+    node, _ = make_node(scene_reply="ocean")
+
+    assert node.infer("I wish I was on a beach somewhere warm.")["scene"] == "ocean"
 
 
 @pytest.mark.parametrize(
-    ("reply", "caption"),
-    [
-        ('  "Quiet light on a sleepy desk."  ', "Quiet light on a sleepy desk."),
-        ("\n\nFirst line here.\nSecond line ignored.", "First line here."),
-        (
-            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen fifteen sixteen"
-            " seventeen eighteen",
-            " ".join(
-                [
-                    "one",
-                    "two",
-                    "three",
-                    "four",
-                    "five",
-                    "six",
-                    "seven",
-                    "eight",
-                    "nine",
-                    "ten",
-                    "eleven",
-                    "twelve",
-                    "thirteen",
-                    "fourteen",
-                    "fifteen",
-                    "sixteen",
-                ]
-            ),
-        ),
-    ],
-    ids=["quotes", "first-line", "too-long"],
+    ("valence", "scene", "emoji"),
+    [(0.8, "sunrise", "😊"), (-0.8, "storm", "😟"), (0.1, "starfield", "😐")],
+    ids=["positive", "negative", "neutral"],
 )
-def test_caption_is_cleaned(reply, caption):
-    node, _ = make_node(reply)
+def test_unusable_answers_fall_back_by_sentiment(valence, scene, emoji):
+    node, _ = make_node(scene_reply="I think a nice garden.", emoji_reply="no idea")
 
-    assert node.infer("scene")["caption"] == caption
-    assert len(caption.split()) <= MAX_CAPTION_WORDS
+    result = node.infer(scene_json("something", valence=valence))
+
+    assert (result["scene"], result["emoji"]) == (scene, emoji)
+    assert result["fallback"] == ["scene", "emoji"]
 
 
-def test_empty_model_output_is_an_error():
-    node, _ = make_node("   \n  ")
+def test_scene_word_is_found_inside_a_longer_answer():
+    node, _ = make_node(scene_reply="I would choose Fireworks for this!")
 
-    with pytest.raises(ValueError, match="empty caption"):
-        node.infer("scene")
+    assert node.infer(scene_json("let's make some noise"))["scene"] == "fireworks"
+
+
+def test_empty_speech_makes_no_llm_calls():
+    node, client = make_node()
+    calls_after_load = len(client.calls)
+
+    result = node.infer(scene_json("", valence=0.9))
+
+    assert len(client.calls) == calls_after_load
+    assert (result["scene"], result["emoji"], result["fallback"]) == ("sunrise", "😊", ["scene", "emoji"])
+
+
+def test_missing_renderer_output_gives_no_png():
+    node, _ = make_node(renderer=lambda emoji: None)
+
+    assert node.infer(scene_json("hello there", 0.5))["emoji_png"] is None
 
 
 def test_infer_before_load_raises():
@@ -112,13 +118,12 @@ def test_infer_before_load_raises():
 
 
 @pytest.mark.models
-def test_real_ollama_writes_a_short_caption():
+def test_real_ollama_directs_a_rainy_sentence():
     node = LlmNode()
     node.load()
 
-    result = node.infer(
-        '{"gesture": "Victory", "image": "electric guitar", "speech": "let us make some noise"}'
-    )
+    result = node.infer(scene_json("The rain outside is awful and my train was late again.", valence=-1.0))
 
-    assert 2 <= len(result["caption"].split()) <= MAX_CAPTION_WORDS
-    assert result["tokens_per_s"] > 5
+    assert result["scene"] in SCENES
+    assert result["emoji"]
+    assert result["emoji_png"]

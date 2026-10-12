@@ -10,7 +10,7 @@ server never opens a device or media file and needs no ML packages inside TD.
 | `classify` | image | MobileNetV3-Small (ImageNet-1k) | PyTorch Hub / torchvision |
 | `speech` | audio | faster-whisper `tiny.en` + Silero VAD | CTranslate2 |
 | `sentiment` | text | DistilBERT SST-2 | Hugging Face transformers |
-| `llm` | LLM | `gemma3:1b` | Ollama / llama.cpp (CPU) |
+| `llm` | LLM (scene director) | `gemma3:1b` picks a visual world + an emoji per sentence | Ollama / llama.cpp (CPU) |
 
 ## Run
 

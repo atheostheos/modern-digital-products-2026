@@ -33,10 +33,10 @@ SPECS = {
 		pars=[('Float', 'Rate', 'Max Rate (msg/s)', 4, 0.1, 30), ('Pulse', 'Send', 'Send Now')],
 		outputs=[('chop', 'sentiment'), ('text', 'label')]),
 	'ml_llm': dict(ext='LlmExt', page='Narrator', input='scene', pos=(350, -375),
-		pars=[('Toggle', 'Auto', 'Auto', True), ('Float', 'Interval', 'Interval (s)', 8, 1, 120),
-			('Pulse', 'Send', 'Send Now'), ('COMP', 'Gesture', 'Gesture Node'), ('COMP', 'Classify', 'Classify Node'),
-			('COMP', 'Speech', 'Speech Node'), ('COMP', 'Sentiment', 'Sentiment Node')],
-		outputs=[('text', 'caption'), ('text', 'scene'), ('chop', 'llm')]),
+		pars=[('Toggle', 'Auto', 'React to Speech', True), ('Float', 'Interval', 'Min Interval (s)', 2, 0.5, 60),
+			('Pulse', 'Send', 'Send Now'), ('COMP', 'Speech', 'Speech Node'), ('COMP', 'Gesture', 'Gesture Node'),
+			('COMP', 'Sentiment', 'Sentiment Node')],
+		outputs=[('text', 'scene'), ('text', 'symbol'), ('text', 'context'), ('top', 'emoji'), ('chop', 'llm')]),
 	'ml_server': dict(ext='ServerExt', page=None, input=None, pos=(-175, -200), pars=[],
 		outputs=[('table', 'nodes'), ('chop', 'metrics')]),
 }
@@ -49,6 +49,7 @@ CODE_DATS = [  # (name, type, file, extra params)
 	('frame_tick', executeDAT, 'td/callbacks/frame_tick.py', {'frameend': True}),
 	('ws_callbacks', textDAT, 'td/callbacks/ws_callbacks.py', {}),
 	('script_chop', textDAT, 'td/callbacks/script_chop.py', {}),
+	('script_top', textDAT, 'td/callbacks/script_top.py', {}),
 ]
 
 
@@ -112,6 +113,11 @@ def _outputs(comp, outputs):
 			src.par.callbacks = 'script_chop'
 			_drop_docked(src)
 			out = _place(comp.create(outCHOP, 'out_' + name), OUT_X, y)
+		elif kind == 'top':
+			src = _place(comp.create(scriptTOP, 'script_' + name), SRC_X, y)
+			src.par.callbacks = 'script_top'
+			_drop_docked(src)
+			out = _place(comp.create(outTOP, 'out_' + name), OUT_X, y)
 		else:
 			src = _place(comp.create(tableDAT if kind == 'table' else textDAT, '{}_{}'.format(kind, name)), SRC_X, y)
 			out = _place(comp.create(outDAT, 'out_' + name), OUT_X, y)

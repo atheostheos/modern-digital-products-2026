@@ -11,6 +11,7 @@ PARENT = '/project1'
 W, H = 640, 480
 DASH_W, DASH_H = 1280, 640  # TouchDesigner Non-Commercial caps textures at 1280x1280
 ALWAYS = {'cooktype': 'always'}  # time-based CHOPs (lag/trail) must cook every frame, even when not displayed
+SCENES = ['storm', 'sunrise', 'fireworks', 'ocean', 'neon', 'starfield']  # same order as the server's llm node
 IN_X, PREP_X, GLSL_X = -350, -175, 0
 ROW = -125
 UI_FONT, MONO_FONT = 'Avenir Next', 'Menlo'
@@ -66,15 +67,23 @@ VIEWS = {
 				expr="'{}   {:+.2f}'.format(op('in_label').text or '—', " + ch('in_sentiment', 'valence') + ")"),
 			dict(name='text_sentence', font=UI_FONT, size=18, color=(0.75, 0.77, 0.8), align=('left', 'top'),
 				pos=(32, -52), wordwrap=True, expr="'“{}”'.format(op('in_text').text) if op('in_text').text else ''")]),
-	'view_llm': dict(pos=(525, -375), title='NARRATOR  ·  gemma3:1b via Ollama (CPU)',
-		inputs=[('DAT', 'in_caption'), ('CHOP', 'in_llm'), ('CHOP', 'in_sentiment')],
-		prep=[('datexecuteDAT', 'typewriter', 'in_caption',
-			{'file': 'td/viewers/typewriter.py', 'syncfile': True, 'language': 'python', 'tablechange': True})],
-		uniforms=[('uValence', [ch('in_sentiment', 'valence')])],
-		texts=[dict(name='text_caption', font=UI_FONT, size=36, color=(1, 1, 1), align=('center', 'center'), pos=(0, 10),
-				wordwrap=True, expr="op('in_caption').text[:max(0, int((absTime.frame - parent().fetch('typed_start', 0)) * 0.7))]"),
-			dict(name='text_stats', font=UI_FONT, size=16, color=(0.6, 0.63, 0.68), align=('right', 'bottom'),
-				pos=(-24, 52), expr="'{:.0f} tok/s   ·   {:.0f} ms'.format(" + ch('in_llm', 'tokens_per_s') + ", "
+	'view_llm': dict(pos=(525, -375), title='SCENE DIRECTOR  ·  gemma3:1b (Ollama, CPU)',
+		inputs=[('CHOP', 'in_llm'), ('TOP', 'in_emoji'), ('DAT', 'in_scene'), ('CHOP', 'in_sentiment'), ('DAT', 'in_quote')],
+		prep=[('selectCHOP', 'select_scene', 'in_llm', {'channames': ' '.join('scene_' + s for s in SCENES)}),
+			('lagCHOP', 'lag_scene', 'select_scene', {'lag1': 0.8, 'lag2': 0.8}),
+			('nullCHOP', 'null_scene', 'lag_scene', ALWAYS)],
+		glsl_inputs=['in_emoji'],
+		uniforms=[('uW1', [ch('null_scene', 'scene_' + s) for s in SCENES[:3]]),
+			('uW2', [ch('null_scene', 'scene_' + s) for s in SCENES[3:]]),
+			('uTime', ['(absTime.frame % 216000) / 60.0']),
+			('uValence', [ch('in_sentiment', 'valence')]),
+			('uBurst', ['(absTime.frame - ' + ch('in_llm', 'directed_frame', -1e9) + ') / 60.0'])],
+		texts=[dict(name='text_scene', font=UI_FONT, size=34, color=(1, 1, 1), align=('left', 'bottom'), pos=(24, 20),
+				expr="op('in_scene').text.upper() or '—'"),
+			dict(name='text_quote', font=UI_FONT, size=17, color=(0.85, 0.87, 0.9), align=('left', 'bottom'), pos=(24, 66),
+				wordwrap=True, expr="'“{}”'.format(op('in_quote').text) if op('in_quote').text else ''"),
+			dict(name='text_stats', font=UI_FONT, size=15, color=(0.75, 0.77, 0.8), align=('right', 'bottom'),
+				pos=(-24, 26), expr="'{:.0f} tok/s   ·   {:.0f} ms'.format(" + ch('in_llm', 'tokens_per_s') + ", "
 				+ ch('in_llm', 'latency_ms') + ")")]),
 	'view_metrics': dict(pos=(700, -375), title='SERVER  ·  latency p50 per node (log scale, last 20 s)',
 		inputs=[('CHOP', 'in_metrics'), ('DAT', 'in_nodes')],
@@ -98,7 +107,8 @@ WIRING = {  # viewer input -> (source COMP, source Out OP)
 	'view_classify': [('ml_classify', 'out_top'), ('ml_classify', 'out_classes')],
 	'view_speech': [('ml_speech', 'out_transcript'), ('ml_speech', 'out_partial'), ('ml_speech', 'out_speech')],
 	'view_sentiment': [('ml_sentiment', 'out_sentiment'), ('ml_sentiment', 'out_label'), ('ml_speech', 'out_final')],
-	'view_llm': [('ml_llm', 'out_caption'), ('ml_llm', 'out_llm'), ('ml_sentiment', 'out_sentiment')],
+	'view_llm': [('ml_llm', 'out_llm'), ('ml_llm', 'out_emoji'), ('ml_llm', 'out_scene'), ('ml_sentiment', 'out_sentiment'),
+		('ml_speech', 'out_final')],
 	'view_metrics': [('ml_server', 'out_metrics'), ('ml_server', 'out_nodes')],
 }
 
