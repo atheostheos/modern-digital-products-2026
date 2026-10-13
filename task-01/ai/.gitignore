@@ -1,0 +1,14 @@
+# TouchDesigner: only the final project ai.toe is committed
+/*.toe
+!/ai.toe
+Backup/
+CrashAutoSave*
+# TDMCP OAuth client registrations
+.tdmcp/
+
+# Downloaded model weights and eval datasets (anchored)
+/models/
+/data/
+
+# Generated test media (scripts/make_media.py)
+/media/

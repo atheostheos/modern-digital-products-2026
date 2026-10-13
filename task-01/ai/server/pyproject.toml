@@ -1,0 +1,58 @@
+[project]
+name = "tdml"
+version = "0.1.0"
+description = "Local ML inference server for TouchDesigner nodes (gesture, classify, speech, sentiment, llm)"
+readme = "README.md"
+authors = [
+    { name = "Галиев Камиль", email = "atheostheos@nomail.com" }
+]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "av>=18.1,<19",
+    "fastapi>=0.143",
+    "faster-whisper>=1.2",
+    "mediapipe>=1.1",
+    "numpy>=2",
+    "ollama>=0.6",
+    "psutil>=7",
+    "pydantic>=2",
+    "torch>=2.14",
+    "torchvision>=0.29",
+    "transformers>=5.19",
+    "uvicorn[standard]>=0.54",
+    "websockets>=17",
+]
+
+[build-system]
+requires = ["uv_build>=0.12.18,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "httpx>=0.28.1",
+    "pytest>=9.1.1",
+    "pytest-cov>=7.1.0",
+    "ruff>=0.17.0",
+    "sounddevice>=0.5",
+]
+
+[project.scripts]
+tdml-server = "tdml.__main__:main"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = ["--strict-markers", "-m", "not models"]
+markers = [
+    "models: loads real ML models (slow, needs downloaded weights)",
+]
+
+[tool.coverage.run]
+source = ["src/tdml"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP", "SIM"]
